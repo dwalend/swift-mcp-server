@@ -19,6 +19,12 @@ struct SwiftMCPApp {
 /// Swift MCP Server - Professional grade Model Context Protocol server
 /// Supports both HTTP and STDIO transports for maximum compatibility
 struct SwiftMCPServer: AsyncParsableCommand {
+    private static let loggingBootstrap: Void = {
+        LoggingSystem.bootstrap { label in
+            StreamLogHandler.standardError(label: label)
+        }
+    }()
+
     static let configuration = CommandConfiguration(
         commandName: "swift-mcp-server",
         abstract: "Production-ready Swift MCP Server with dual transport support for VS Code, Serena, and HTTP clients",
@@ -150,6 +156,7 @@ struct SwiftMCPServer: AsyncParsableCommand {
     }
     
     private func setupLogging() throws -> Logger {
+        _ = Self.loggingBootstrap
         var logger = Logger(label: "swift-mcp-server")
         
         // Set log level
@@ -270,7 +277,7 @@ struct SwiftMCPServer: AsyncParsableCommand {
     }
     
     private func startStdioServer(logger: Logger, workspaceURL: URL?) async throws {
-        logger.info("📡 Initializing STDIO transport for VS Code/Serena integration")
+        logger.info("📡 Initializing STDIO transport for AI/editor MCP integration")
         
         let stdinHandler = StdioTransport(logger: logger, workspaceRoot: workspaceURL)
         
@@ -367,12 +374,12 @@ struct SwiftMCPServer: AsyncParsableCommand {
     private func setupSignalHandlers() {
         // Setup graceful shutdown on SIGTERM and SIGINT
         signal(SIGTERM) { _ in
-            print("\n🔄 Received SIGTERM - graceful shutdown initiated")
+            fputs("\nReceived SIGTERM - graceful shutdown initiated\n", stderr)
             Darwin.exit(0)
         }
         
         signal(SIGINT) { _ in
-            print("\n🔄 Received SIGINT - graceful shutdown initiated") 
+            fputs("\nReceived SIGINT - graceful shutdown initiated\n", stderr)
             Darwin.exit(0)
         }
         
@@ -442,22 +449,17 @@ extension SwiftMCPServer {
             }
         }
         
-        print("✅ Loaded enterprise configuration from: \(configPath)")
-        print("🏢 Transport: \(serverConfig.mcpServer.transport.type)")
+        writeToStandardError("Loaded enterprise configuration from: \(configPath)")
+        writeToStandardError("Transport: \(serverConfig.mcpServer.transport.type)")
         if let performance = serverConfig.performance {
-            print("📊 Task timeout: \(performance.taskTimeoutSeconds)s")
-            print("📊 Max concurrent tasks: \(performance.maxConcurrentTasks)")
-            print("📊 Metrics enabled: \(performance.enableMetrics)")
+            writeToStandardError("Task timeout: \(performance.taskTimeoutSeconds)s")
+            writeToStandardError("Max concurrent tasks: \(performance.maxConcurrentTasks)")
+            writeToStandardError("Metrics enabled: \(performance.enableMetrics)")
         }
-        print("🧠 Serena integration: \(serverConfig.serenaIntegration.languageSupport)")
+        writeToStandardError("Serena integration: \(serverConfig.serenaIntegration.languageSupport)")
     }
 }
 
-// MARK: - StdioTransport Extension
-
-extension StdioTransport {
-    func shutdown() async {
-        // Graceful shutdown implementation
-        // This would be implemented in the StdioTransport class
-    }
+private func writeToStandardError(_ message: String) {
+    FileHandle.standardError.write(Data((message + "\n").utf8))
 }

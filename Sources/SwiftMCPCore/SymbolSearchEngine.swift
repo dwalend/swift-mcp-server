@@ -1,20 +1,19 @@
 import Foundation
 import Logging
 
-/// Enhanced symbol search with regex fallback and caching
+/// Symbol search backed by the semantic AST index.
 public class SymbolSearchEngine {
     private let projectPath: URL
     private let logger: Logger
-    private var symbolCache: [String: [SymbolInfo]] = [:]
-    private let cacheTimeout: TimeInterval = 300 // 5 minutes
-    private var lastCacheUpdate: Date = Date.distantPast
+    private let semanticIndex: SemanticProjectIndex
     
     public init(projectPath: URL, logger: Logger) {
         self.projectPath = projectPath
         self.logger = logger
+        self.semanticIndex = SemanticProjectIndexCache.shared.index(for: projectPath, logger: logger)
     }
     
-    /// Find symbols with advanced filtering and regex support
+    /// Find symbols with syntax-aware filtering.
     public func findSymbols(
         namePattern: String = "",
         symbolType: String = "",
@@ -22,105 +21,108 @@ public class SymbolSearchEngine {
         includePrivate: Bool = false,
         includeInherited: Bool = false
     ) async throws -> [SymbolInfo] {
-        
-        // Check cache first
-        let cacheKey = "\(namePattern)_\(symbolType)_\(useRegex)_\(includePrivate)"
-        if let cached = getCachedSymbols(for: cacheKey) {
-            return cached
-        }
-        
         logger.debug("🔍 Searching symbols with pattern: \(namePattern), type: \(symbolType)")
-        
-        var symbols: [SymbolInfo] = []
-        
-        // Use regex-based search
-        symbols = try await searchWithRegex(
-            namePattern: namePattern,
-            symbolType: symbolType,
-            useRegex: useRegex,
-            includePrivate: includePrivate
-        )
-        
-        // Filter inherited symbols if needed
-        if !includeInherited {
-            symbols = symbols.filter { !$0.isInherited }
-        }
-        
-        // Cache results
-        setCachedSymbols(symbols, for: cacheKey)
-        
-        return symbols
+
+        let snapshot = try await semanticIndex.snapshot()
+        let allowedKinds = normalizedKinds(for: symbolType)
+        _ = includeInherited
+
+        return snapshot.declarations
+            .filter { declaration in
+                (allowedKinds.isEmpty || allowedKinds.contains(declaration.kind)) &&
+                (includePrivate || declaration.accessLevel != "private" && declaration.accessLevel != "fileprivate")
+            }
+            .filter { declaration in
+                matches(name: declaration.name, pattern: namePattern, useRegex: useRegex)
+            }
+            .map(makeSymbolInfo)
+            .sorted {
+                if $0.location.uri == $1.location.uri {
+                    if $0.location.line == $1.location.line {
+                        return $0.location.character < $1.location.character
+                    }
+                    return $0.location.line < $1.location.line
+                }
+                return $0.location.uri < $1.location.uri
+            }
     }
     
-    /// Find all references to a symbol
+    /// Find all syntax-level references to a symbol.
     public func findReferences(
         symbolName: String,
         symbolType: String = "",
         includeComments: Bool = false
     ) async throws -> [ReferenceInfo] {
-        
         logger.debug("📍 Finding references for symbol: \(symbolName)")
-        
-        var references: [ReferenceInfo] = []
-        let swiftFiles = try await findAllSwiftFiles()
-        
-        await withTaskGroup(of: [ReferenceInfo].self) { group in
-            for file in swiftFiles {
-                group.addTask {
-                    await self.findReferencesInFile(
-                        file: file,
-                        symbolName: symbolName,
-                        symbolType: symbolType,
-                        includeComments: includeComments
-                    )
+
+        let snapshot = try await semanticIndex.snapshot()
+        let allowedKinds = Set(normalizedKinds(for: symbolType))
+
+        return snapshot.references
+            .filter { $0.name == symbolName }
+            .filter { reference in
+                guard !allowedKinds.isEmpty else { return true }
+                if reference.kind == .declaration {
+                    return snapshot.declarations.contains {
+                        $0.name == symbolName &&
+                        $0.line == reference.line &&
+                        $0.fileURL == reference.fileURL &&
+                        allowedKinds.contains($0.kind)
+                    }
                 }
+                return true
             }
-            
-            for await fileReferences in group {
-                references.append(contentsOf: fileReferences)
+            .map { reference in
+                ReferenceInfo(
+                    symbolName: symbolName,
+                    file: reference.fileURL.path,
+                    line: reference.line,
+                    character: reference.character,
+                    context: reference.context,
+                    usageType: reference.kind.rawValue
+                )
             }
-        }
-        
-        return references
     }
     
-    /// Get symbol hierarchy (inheritance chain)
+    /// Get type hierarchy based on semantic inheritance information.
     public func getSymbolHierarchy(symbolName: String) async throws -> SymbolHierarchy {
         logger.debug("🏗️ Building hierarchy for symbol: \(symbolName)")
-        
-        let symbols = try await findSymbols(namePattern: symbolName, useRegex: false)
-        guard let targetSymbol = symbols.first(where: { $0.name == symbolName }) else {
+
+        let snapshot = try await semanticIndex.snapshot()
+        guard let targetType = snapshot.types.first(where: { $0.name == symbolName && isTypeLike(kind: $0.kind) }) else {
             throw SwiftMCPError.lspNotInitialized
         }
-        
-        let parents = try await findParentSymbols(for: targetSymbol)
-        let children = try await findChildSymbols(for: targetSymbol)
-        
+
+        let parents = snapshot.types
+            .filter { targetType.inheritedTypes.contains($0.name) }
+            .map(makeTypeSymbolInfo)
+
+        let children = snapshot.types
+            .filter { $0.inheritedTypes.contains(symbolName) }
+            .map(makeTypeSymbolInfo)
+
         return SymbolHierarchy(
-            symbol: targetSymbol,
+            symbol: makeTypeSymbolInfo(targetType),
             parents: parents,
             children: children
         )
     }
     
-    /// Analyze symbol usage patterns
+    /// Analyze symbol usage patterns from semantic reference contexts.
     public func analyzeSymbolUsage(symbolName: String) async throws -> SymbolUsageAnalysis {
         logger.debug("📊 Analyzing usage for symbol: \(symbolName)")
-        
+
         let references = try await findReferences(symbolName: symbolName)
-        
+
         var usagePatterns: [String: Int] = [:]
         var fileDistribution: [String: Int] = [:]
-        
+
         for reference in references {
-            // Count usage patterns
             let pattern = reference.context.trimmingCharacters(in: .whitespacesAndNewlines)
             usagePatterns[pattern, default: 0] += 1
-            
-            // Count file distribution
             fileDistribution[reference.file, default: 0] += 1
         }
-        
+
         return SymbolUsageAnalysis(
             symbolName: symbolName,
             totalReferences: references.count,
@@ -130,307 +132,66 @@ public class SymbolSearchEngine {
             mostUsedIn: fileDistribution.max(by: { $0.value < $1.value })?.key
         )
     }
-    
-    // MARK: - Private Methods
-    
-    private func searchWithRegex(
-        namePattern: String,
-        symbolType: String,
-        useRegex: Bool,
-        includePrivate: Bool
-    ) async throws -> [SymbolInfo] {
-        
-        var symbols: [SymbolInfo] = []
-        let swiftFiles = try await findAllSwiftFiles()
-        
-        let patterns = createSearchPatterns(for: symbolType, includePrivate: includePrivate)
-        
-        await withTaskGroup(of: [SymbolInfo].self) { group in
-            for file in swiftFiles {
-                group.addTask {
-                    await self.searchSymbolsInFile(
-                        file: file,
-                        namePattern: namePattern,
-                        patterns: patterns,
-                        useRegex: useRegex
-                    )
-                }
-            }
-            
-            for await fileSymbols in group {
-                symbols.append(contentsOf: fileSymbols)
-            }
+
+    // MARK: - Helpers
+
+    private func normalizedKinds(for symbolType: String) -> Set<String> {
+        guard !symbolType.isEmpty else {
+            return []
         }
-        
-        return symbols
+
+        switch symbolType {
+        case "function":
+            return ["function"]
+        case "property":
+            return ["property"]
+        default:
+            return [symbolType]
+        }
     }
-    
-    private func createSearchPatterns(for symbolType: String, includePrivate: Bool) -> [String: String] {
-        var patterns: [String: String] = [:]
-        
-        let accessModifiers = includePrivate ? 
-            "(?:public\\s+|private\\s+|internal\\s+|fileprivate\\s+)?" :
-            "(?:public\\s+|internal\\s+)?"
-        
-        if symbolType.isEmpty || symbolType == "class" {
-            patterns["class"] = "\(accessModifiers)class\\s+(\\w+)(?:\\s*:\\s*([^{]+))?"
+
+    private func matches(name: String, pattern: String, useRegex: Bool) -> Bool {
+        guard !pattern.isEmpty else {
+            return true
         }
-        
-        if symbolType.isEmpty || symbolType == "struct" {
-            patterns["struct"] = "\(accessModifiers)struct\\s+(\\w+)(?:\\s*:\\s*([^{]+))?"
+
+        if useRegex {
+            return name.range(of: pattern, options: .regularExpression) != nil
         }
-        
-        if symbolType.isEmpty || symbolType == "enum" {
-            patterns["enum"] = "\(accessModifiers)enum\\s+(\\w+)(?:\\s*:\\s*([^{]+))?"
-        }
-        
-        if symbolType.isEmpty || symbolType == "protocol" {
-            patterns["protocol"] = "\(accessModifiers)protocol\\s+(\\w+)(?:\\s*:\\s*([^{]+))?"
-        }
-        
-        if symbolType.isEmpty || symbolType == "function" {
-            patterns["function"] = "\(accessModifiers)func\\s+(\\w+)\\s*\\("
-        }
-        
-        if symbolType.isEmpty || symbolType == "property" {
-            patterns["property"] = "\(accessModifiers)(?:var|let)\\s+(\\w+)\\s*:"
-        }
-        
-        if symbolType.isEmpty || symbolType == "typealias" {
-            patterns["typealias"] = "\(accessModifiers)typealias\\s+(\\w+)\\s*="
-        }
-        
-        return patterns
+
+        return name.localizedCaseInsensitiveContains(pattern)
     }
-    
-    private func searchSymbolsInFile(
-        file: URL,
-        namePattern: String,
-        patterns: [String: String],
-        useRegex: Bool
-    ) async -> [SymbolInfo] {
-        
-        var symbols: [SymbolInfo] = []
-        
-        guard let content = try? String(contentsOf: file) else {
-            return symbols
-        }
-        
-        for (symbolType, pattern) in patterns {
-            do {
-                let regex = try NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines])
-                let range = NSRange(content.startIndex..., in: content)
-                
-                regex.enumerateMatches(in: content, options: [], range: range) { match, _, _ in
-                    guard let match = match,
-                          match.numberOfRanges > 1 else {
-                        return
-                    }
-                    
-                    let nsRange = match.range(at: 1)
-                    guard nsRange.location != NSNotFound else {
-                        return
-                    }
-                    
-                    let startIndex = content.index(content.startIndex, offsetBy: nsRange.location)
-                    let endIndex = content.index(startIndex, offsetBy: nsRange.length)
-                    let symbolName = String(content[startIndex..<endIndex])
-                    
-                    // Filter by name pattern
-                    if !namePattern.isEmpty {
-                        if useRegex {
-                            guard symbolName.range(of: namePattern, options: .regularExpression) != nil else {
-                                return
-                            }
-                        } else {
-                            guard symbolName.localizedCaseInsensitiveContains(namePattern) else {
-                                return
-                            }
-                        }
-                    }
-                    
-                    // Get inheritance/conformance info
-                    var inheritance: String?
-                    if match.numberOfRanges > 2 {
-                        let inheritanceRange = match.range(at: 2)
-                        if inheritanceRange.location != NSNotFound {
-                            let startIndex = content.index(content.startIndex, offsetBy: inheritanceRange.location)
-                            let endIndex = content.index(startIndex, offsetBy: inheritanceRange.length)
-                            inheritance = String(content[startIndex..<endIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-                        }
-                    }
-                    
-                    // Find line number
-                    let location = match.range(at: 0).location
-                    let lineNumber = content.prefix(location).components(separatedBy: .newlines).count
-                    
-                    let symbol = SymbolInfo(
-                        name: symbolName,
-                        kind: symbolType,
-                        location: Location(
-                            uri: "file://\(file.path)",
-                            line: lineNumber,
-                            character: 0
-                        ),
-                        containerName: inheritance,
-                        detail: symbolType + " " + symbolName
-                    )
-                    
-                    symbols.append(symbol)
-                }
-            } catch {
-                logger.error("Regex error for pattern \(pattern): \(error)")
-            }
-        }
-        
-        return symbols
+
+    private func isTypeLike(kind: String) -> Bool {
+        ["class", "struct", "enum", "protocol", "actor"].contains(kind)
     }
-    
-    private func findReferencesInFile(
-        file: URL,
-        symbolName: String,
-        symbolType: String,
-        includeComments: Bool
-    ) async -> [ReferenceInfo] {
-        
-        var references: [ReferenceInfo] = []
-        
-        guard let content = try? String(contentsOf: file) else {
-            return references
-        }
-        
-        let lines = content.components(separatedBy: .newlines)
-        
-        for (lineIndex, line) in lines.enumerated() {
-            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            // Skip comments unless explicitly requested
-            if !includeComments && (trimmedLine.hasPrefix("//") || trimmedLine.hasPrefix("/*")) {
-                continue
-            }
-            
-            // Find all occurrences of the symbol name in this line
-            var searchRange = line.startIndex..<line.endIndex
-            
-            while let range = line.range(of: symbolName, range: searchRange) {
-                // Check if it's a whole word (not part of another identifier)
-                let isWholeWord = isWholeWordMatch(in: line, range: range)
-                
-                if isWholeWord {
-                    // Get context (surrounding lines)
-                    let contextStart = max(0, lineIndex - 1)
-                    let contextEnd = min(lines.count - 1, lineIndex + 1)
-                    let context = lines[contextStart...contextEnd].joined(separator: "\n")
-                    
-                    let reference = ReferenceInfo(
-                        symbolName: symbolName,
-                        file: file.path,
-                        line: lineIndex + 1,
-                        character: line.distance(from: line.startIndex, to: range.lowerBound),
-                        context: context,
-                        usageType: determineUsageType(line: line, symbolName: symbolName)
-                    )
-                    
-                    references.append(reference)
-                }
-                
-                searchRange = range.upperBound..<line.endIndex
-            }
-        }
-        
-        return references
-    }
-    
-    private func findParentSymbols(for symbol: SymbolInfo) async throws -> [SymbolInfo] {
-        // Implementation for finding parent classes/protocols
-        // This would analyze inheritance chains
-        return []
-    }
-    
-    private func findChildSymbols(for symbol: SymbolInfo) async throws -> [SymbolInfo] {
-        // Implementation for finding child classes/conforming types
-        // This would analyze classes that inherit from the target symbol
-        return []
-    }
-    
-    private func findAllSwiftFiles() async throws -> [URL] {
-        var swiftFiles: [URL] = []
-        
-        let enumerator = FileManager.default.enumerator(
-            at: projectPath,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+
+    private func makeSymbolInfo(from declaration: SemanticDeclaration) -> SymbolInfo {
+        SymbolInfo(
+            name: declaration.name,
+            kind: declaration.kind,
+            location: Location(
+                uri: "file://\(declaration.fileURL.path)",
+                line: max(0, declaration.line - 1),
+                character: declaration.character
+            ),
+            containerName: declaration.containerName,
+            detail: declaration.kind + " " + declaration.name
         )
-        
-        while let url = enumerator?.nextObject() as? URL {
-            if url.pathExtension == "swift" {
-                swiftFiles.append(url)
-            }
-        }
-        
-        return swiftFiles
     }
-    
-    private func isWholeWordMatch(in line: String, range: Swift.Range<String.Index>) -> Bool {
-        let beforeIndex = line.index(before: range.lowerBound)
-        let afterIndex = range.upperBound
-        
-        let beforeChar = range.lowerBound > line.startIndex ? line[beforeIndex] : " "
-        let afterChar = afterIndex < line.endIndex ? line[afterIndex] : " "
-        
-        let wordCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
-        
-        return !wordCharacters.contains(beforeChar.unicodeScalars.first!) &&
-               !wordCharacters.contains(afterChar.unicodeScalars.first!)
-    }
-    
-    private func determineUsageType(line: String, symbolName: String) -> String {
-        let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        if trimmedLine.contains("func") && trimmedLine.contains(symbolName) {
-            return "function_declaration"
-        } else if trimmedLine.contains("class") || trimmedLine.contains("struct") {
-            return "type_declaration"
-        } else if trimmedLine.contains("import") {
-            return "import"
-        } else if trimmedLine.contains("=") {
-            return "assignment"
-        } else if trimmedLine.contains("(") && trimmedLine.contains(")") {
-            return "function_call"
-        } else {
-            return "reference"
-        }
-    }
-    
-    private func extractAccessLevel(from content: String, at range: NSRange) -> String {
-        let prefix = String(content.prefix(range.location))
-        
-        if prefix.hasSuffix("public ") {
-            return "public"
-        } else if prefix.hasSuffix("private ") {
-            return "private"
-        } else if prefix.hasSuffix("fileprivate ") {
-            return "fileprivate"
-        } else if prefix.hasSuffix("internal ") {
-            return "internal"
-        } else {
-            return "internal" // Default in Swift
-        }
-    }
-    
-    // MARK: - Caching
-    
-    private func getCachedSymbols(for key: String) -> [SymbolInfo]? {
-        if Date().timeIntervalSince(lastCacheUpdate) > cacheTimeout {
-            symbolCache.removeAll()
-            return nil
-        }
-        return symbolCache[key]
-    }
-    
-    private func setCachedSymbols(_ symbols: [SymbolInfo], for key: String) {
-        symbolCache[key] = symbols
-        lastCacheUpdate = Date()
+
+    private func makeTypeSymbolInfo(_ typeSummary: SemanticTypeSummary) -> SymbolInfo {
+        SymbolInfo(
+            name: typeSummary.name,
+            kind: typeSummary.kind,
+            location: Location(
+                uri: "file://\(typeSummary.fileURL.path)",
+                line: max(0, typeSummary.line - 1),
+                character: typeSummary.character
+            ),
+            containerName: nil,
+            detail: typeSummary.kind + " " + typeSummary.name
+        )
     }
 }
 
@@ -481,12 +242,5 @@ public struct SymbolUsageAnalysis {
         self.usagePatterns = usagePatterns
         self.fileDistribution = fileDistribution
         self.mostUsedIn = mostUsedIn
-    }
-}
-
-// Enhanced SymbolInfo with additional computed properties
-extension SymbolInfo {
-    public var isInherited: Bool { 
-        return containerName != nil && !containerName!.isEmpty
     }
 }

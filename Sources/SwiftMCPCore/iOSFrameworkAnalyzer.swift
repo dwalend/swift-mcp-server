@@ -1,174 +1,168 @@
 import Foundation
 import Logging
 
-/// iOS Framework Analysis Tool
-public class iOSFrameworkAnalysisEngine {
+/// iOS framework and UI analysis backed by syntax and semantic project data.
+public final class iOSFrameworkAnalysisEngine {
     private let logger: Logger
     private let projectPath: URL
-    private let fileManager = FileManager.default
-    
-    public init(projectPath: URL, logger: Logger) {
-        self.projectPath = projectPath
+    private let semanticIndex: SemanticProjectIndex
+    private let architectureAnalyzer: ArchitectureAnalyzer
+    private let sdkCatalog: AppleSDKCatalog
+
+    public init(projectPath: URL, logger: Logger, sdkCatalog: AppleSDKCatalog? = nil) {
         self.logger = logger
+        self.projectPath = projectPath
+        self.semanticIndex = SemanticProjectIndexCache.shared.index(for: projectPath, logger: logger)
+        self.architectureAnalyzer = ArchitectureAnalyzer(
+            projectPath: projectPath,
+            logger: logger,
+            semanticIndex: semanticIndex
+        )
+        self.sdkCatalog = sdkCatalog ?? AppleSDKCatalog(logger: logger)
     }
-    
+
     // MARK: - Public API
-    
+
     public func analyzeIOSPatterns() async throws -> iOSAnalysisResult {
         logger.info("📱 Starting iOS pattern analysis")
-        
-        let swiftFiles = try findSwiftFiles()
-        let frameworkUsage = try await analyzeFrameworkUsage(in: swiftFiles)
-        let uiPatterns = try await analyzeUIPatterns(in: swiftFiles)
-        let architecturePatterns = try await analyzeArchitecturePatterns(in: swiftFiles)
-        let modernFeatures = try await analyzeModernFeatures(in: swiftFiles)
-        
+
+        let snapshot = try await semanticIndex.snapshot()
+        let catalogSummary = try await sdkCatalog.summary()
+        let availableAppleModules = try await sdkCatalog.availableModuleNames()
+        let importedAppleModules = Set(snapshot.importedModules).intersection(availableAppleModules)
+        let foundationModelsModule = try await sdkCatalog.module(named: "FoundationModels")
+        let imagePlaygroundModule = try await sdkCatalog.module(named: "ImagePlayground")
+
+        let frameworkUsage = analyzeFrameworkUsage(in: snapshot, availableAppleModules: availableAppleModules)
+        let uiPatterns = analyzeUIPatterns(in: snapshot)
+        let architecturePatterns = try await analyzeArchitecturePatterns(in: snapshot)
+        let modernFeatures = analyzeModernFeatures(in: snapshot)
+        let appleModules = try await analyzeAppleModules(
+            in: snapshot,
+            importedAppleModules: importedAppleModules
+        )
+        let appleIntelligence = analyzeAppleIntelligence(
+            in: snapshot,
+            foundationModelsModule: foundationModelsModule,
+            imagePlaygroundModule: imagePlaygroundModule
+        )
+        let documentationReferences = try await sdkCatalog.documentationReferences(
+            for: importedAppleModules
+        )
+
         let result = iOSAnalysisResult(
             frameworkUsage: frameworkUsage,
             uiPatterns: uiPatterns,
             architecturePatterns: architecturePatterns,
             modernFeatures: modernFeatures,
+            appleModules: appleModules,
+            appleIntelligence: appleIntelligence,
+            sdkCatalog: catalogSummary,
+            documentationReferences: documentationReferences,
             recommendations: generateRecommendations(
                 framework: frameworkUsage,
                 ui: uiPatterns,
                 architecture: architecturePatterns,
-                modern: modernFeatures
+                modern: modernFeatures,
+                appleModules: appleModules,
+                appleIntelligence: appleIntelligence
             )
         )
-        
+
         logger.info("✅ iOS pattern analysis completed")
         return result
     }
-    
+
     // MARK: - Apple Framework Detection
-    
-    /// Official Apple frameworks and APIs
-    private let appleFrameworks: Set<String> = [
-        // UI Frameworks
-        "UIKit", "SwiftUI", "AppKit", "WatchKit", "CarPlay",
-        
-        // Foundation & Core
-        "Foundation", "CoreFoundation", "CoreData", "CoreGraphics",
-        "CoreAnimation", "CoreImage", "CoreText", "CoreVideo", "CoreAudio",
-        
-        // Networking & Web (Official Apple only)
-        "Network", "NetworkExtension", "WebKit", "CFNetwork", "URLSession",
-        
-        // Media & Graphics
-        "AVFoundation", "AVKit", "Photos", "PhotosUI", "ImageIO", "VideoToolbox",
-        "Metal", "MetalKit", "SceneKit", "SpriteKit", "RealityKit", "ARKit",
-        
-        // System & Security
-        "Security", "CryptoKit", "LocalAuthentication", "AuthenticationServices",
-        "DeviceCheck", "SystemConfiguration", "OSLog", "os",
-        
-        // Location & Maps
-        "CoreLocation", "MapKit", "Contacts", "ContactsUI",
-        
-        // Data & Storage
-        "CloudKit", "CoreSpotlight", "CoreServices", "UniformTypeIdentifiers",
-        "SwiftData", "Combine",
-        
-        // Communication
-        "MessageUI", "Social", "EventKit", "EventKitUI", "CallKit",
-        
-        // Hardware & Sensors
-        "CoreMotion", "CoreBluetooth", "ExternalAccessory", "HomeKit",
-        "HealthKit", "ResearchKit", "CareKit",
-        
-        // App Services
-        "StoreKit", "GameKit", "MultipeerConnectivity", "PassKit",
-        "NotificationCenter", "UserNotifications", "BackgroundTasks",
-        
-        // Developer Tools
-        "XCTest", "QuickLook", "SafariServices", "MobileCoreServices"
+
+    private let networkingSymbols: Set<String> = [
+        "Data", "HTTPURLResponse", "JSONDecoder", "JSONEncoder", "NWPathMonitor", "URLComponents",
+        "URLRequest", "URLResponse", "URLSession", "URLSessionConfiguration"
     ]
-    
-    /// Check if a framework is an official Apple framework
-    private func isAppleFramework(_ framework: String) -> Bool {
-        return appleFrameworks.contains(framework)
-    }
-    
+
+    private let storyboardSymbols: Set<String> = [
+        "UIStoryboard", "instantiateInitialViewController", "instantiateViewController", "performSegue"
+    ]
+
+    private let autolayoutSymbols: Set<String> = [
+        "NSLayoutConstraint", "activate", "constraint", "translatesAutoresizingMaskIntoConstraints"
+    ]
+
+    private let swiftUIModifierNames: Set<String> = [
+        "onAppear", "onChange", "onDisappear", "task"
+    ]
+
+    private let propertyWrapperNames: Set<String> = [
+        "AppStorage", "Binding", "Environment", "EnvironmentObject", "ObservedObject", "Published",
+        "Query", "SceneStorage", "State", "StateObject"
+    ]
+
+    private let foundationModelSymbols: Set<String> = [
+        "FoundationModels",
+        "Generable",
+        "GenerationSchema",
+        "LanguageModelSession",
+        "SystemLanguageModel"
+    ]
+
+    private let imagePlaygroundSymbols: Set<String> = [
+        "ImageCreator",
+        "ImagePlaygroundConcept",
+        "ImagePlaygroundStyle",
+        "imagePlaygroundSheet"
+    ]
+
     // MARK: - Framework Usage Analysis
-    
-    private func analyzeFrameworkUsage(in files: [URL]) async throws -> FrameworkUsage {
-        var imports: [String: Int] = [:]
-        var totalLines = 0
-        
-        for file in files {
-            let content = try String(contentsOf: file, encoding: .utf8)
-            let lines = content.components(separatedBy: .newlines)
-            totalLines += lines.count
-            
-            for line in lines {
-                if let framework = extractImport(from: line) {
-                    imports[framework, default: 0] += 1
-                }
+
+    private func analyzeFrameworkUsage(
+        in snapshot: SemanticProjectSnapshot,
+        availableAppleModules: Set<String>
+    ) -> FrameworkUsage {
+        let imports = snapshot.files.reduce(into: [String: Int]()) { counts, file in
+            for module in file.imports {
+                counts[module, default: 0] += 1
             }
         }
-        
-        // Separate Apple frameworks from third-party libraries
-        let coreFrameworks = ["UIKit", "SwiftUI", "Foundation", "Combine", "CoreData", "URLSession", "Network", "CFNetwork"]
+
         let appleFrameworksOnly = imports.filter { item in
-            !coreFrameworks.contains(item.key) && isAppleFramework(item.key)
+            !["Combine", "CoreData", "Foundation", "Network", "SwiftUI", "UIKit", "URLSession"].contains(item.key) &&
+            availableAppleModules.contains(item.key)
         }
-        let thirdPartyLibraries = imports.filter { item in
-            !coreFrameworks.contains(item.key) && !isAppleFramework(item.key)
-        }
-        
-        // Combine Apple frameworks in "other", log third-party separately
-        if !thirdPartyLibraries.isEmpty {
-            logger.info("🔍 Third-party libraries detected: \(thirdPartyLibraries.keys.sorted().joined(separator: ", "))")
-        }
-        
+
+        let networkingCount = (imports["Network"] ?? 0) +
+            snapshot.references.filter { networkingSymbols.contains($0.name) }.count
+
         return FrameworkUsage(
             uiKit: imports["UIKit"] ?? 0,
             swiftUI: imports["SwiftUI"] ?? 0,
             foundation: imports["Foundation"] ?? 0,
             combine: imports["Combine"] ?? 0,
-            coreData: imports["CoreData"] ?? 0,
-            networking: (imports["URLSession"] ?? 0) + (imports["Network"] ?? 0) + (imports["CFNetwork"] ?? 0),
-            other: appleFrameworksOnly, // Only Apple frameworks in "other"
-            dominantFramework: determineDominantFramework(imports.filter { isAppleFramework($0.key) }) // Only consider Apple frameworks
+            coreData: (imports["CoreData"] ?? 0) + (imports["SwiftData"] ?? 0),
+            networking: networkingCount,
+            foundationModels: imports["FoundationModels"] ?? 0,
+            imagePlayground: imports["ImagePlayground"] ?? 0,
+            other: appleFrameworksOnly,
+            dominantFramework: determineDominantFramework(imports)
         )
     }
-    
-    private func extractImport(from line: String) -> String? {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("import ") {
-            let framework = String(trimmed.dropFirst(7)).trimmingCharacters(in: .whitespaces)
-            return framework
-        }
-        return nil
-    }
-    
+
     private func determineDominantFramework(_ imports: [String: Int]) -> String {
-        let relevantImports = imports.filter { ["UIKit", "SwiftUI"].contains($0.key) }
-        guard let dominant = relevantImports.max(by: { $0.value < $1.value }) else {
+        let uiImports = imports.filter { ["UIKit", "SwiftUI"].contains($0.key) }
+        guard let dominant = uiImports.max(by: { $0.value < $1.value }) else {
             return "Foundation"
         }
         return dominant.key
     }
-    
+
     // MARK: - UI Pattern Analysis
-    
-    private func analyzeUIPatterns(in files: [URL]) async throws -> UIPatterns {
-        var viewControllers = 0
-        var swiftUIViews = 0
-        var storyboardUsage = 0
-        var autolayoutUsage = 0
-        var delegatePatterns = 0
-        
-        for file in files {
-            let content = try String(contentsOf: file, encoding: .utf8)
-            
-            viewControllers += countPattern(pattern: "UIViewController", in: content)
-            swiftUIViews += countPattern(pattern: "View\\s*{", in: content, isRegex: true)
-            storyboardUsage += countPattern(pattern: "storyboard", in: content)
-            autolayoutUsage += countPattern(pattern: "constraint|NSLayoutConstraint", in: content, isRegex: true)
-            delegatePatterns += countPattern(pattern: "delegate", in: content)
-        }
-        
+
+    private func analyzeUIPatterns(in snapshot: SemanticProjectSnapshot) -> UIPatterns {
+        let viewControllers = snapshot.types.filter { Set($0.inheritedTypes).contains("UIViewController") }.count
+        let swiftUIViews = snapshot.types.filter { Set($0.inheritedTypes).contains("View") }.count
+        let storyboardUsage = snapshot.references.filter { storyboardSymbols.contains($0.name) }.count
+        let autolayoutUsage = snapshot.references.filter { autolayoutSymbols.contains($0.name) }.count
+        let delegatePatterns = snapshot.declarations.filter { $0.name == "delegate" }.count
+
         return UIPatterns(
             viewControllers: viewControllers,
             swiftUIViews: swiftUIViews,
@@ -178,79 +172,157 @@ public class iOSFrameworkAnalysisEngine {
             primaryUIFramework: swiftUIViews > viewControllers ? "SwiftUI" : "UIKit"
         )
     }
-    
+
     // MARK: - Architecture Pattern Analysis
-    
-    private func analyzeArchitecturePatterns(in files: [URL]) async throws -> ArchitecturePatterns {
-        var mvvmScore = 0
-        var mvpScore = 0
-        var viperScore = 0
-        var coordinatorScore = 0
-        
-        for file in files {
-            let content = try String(contentsOf: file, encoding: .utf8)
-            
-            // MVVM Detection
-            mvvmScore += countPattern(pattern: "ViewModel|ObservableObject", in: content, isRegex: true)
-            
-            // MVP Detection  
-            mvpScore += countPattern(pattern: "Presenter", in: content)
-            
-            // VIPER Detection
-            viperScore += countPattern(pattern: "Interactor|Router|Entity", in: content, isRegex: true)
-            
-            // Coordinator Detection
-            coordinatorScore += countPattern(pattern: "Coordinator", in: content)
-        }
-        
+
+    private func analyzeArchitecturePatterns(in snapshot: SemanticProjectSnapshot) async throws -> ArchitecturePatterns {
+        let dominantArchitecture = try await architectureAnalyzer.detectArchitecturePattern()
+        let observableNames = Set(snapshot.types.filter(isObservableType).map(\.name))
+        let mvvmScore = snapshot.types
+            .filter { Set($0.inheritedTypes).contains("View") || Set($0.inheritedTypes).contains("UIViewController") }
+            .reduce(into: 0) { total, type in
+                let references = Set(type.memberTypeNames).union(type.referencedNames)
+                if type.hasStateObjectWrapper || !references.intersection(observableNames).isEmpty {
+                    total += 1
+                }
+            }
+
         return ArchitecturePatterns(
             mvvmScore: mvvmScore,
-            mvpScore: mvpScore,
-            viperScore: viperScore,
-            coordinatorScore: coordinatorScore,
-            dominantPattern: determineDominantArchitecture(
-                mvvm: mvvmScore,
-                mvp: mvpScore,
-                viper: viperScore,
-                coordinator: coordinatorScore
-            )
+            mvpScore: 0,
+            viperScore: 0,
+            coordinatorScore: 0,
+            dominantPattern: dominantArchitecture.rawValue
         )
     }
-    
-    private func determineDominantArchitecture(mvvm: Int, mvp: Int, viper: Int, coordinator: Int) -> String {
-        let scores = [
-            ("MVVM", mvvm),
-            ("MVP", mvp),
-            ("VIPER", viper),
-            ("Coordinator", coordinator)
-        ]
-        
-        guard let dominant = scores.max(by: { $0.1 < $1.1 }), dominant.1 > 0 else {
-            return "MVC (Default)"
+
+    // MARK: - Apple Intelligence Analysis
+
+    private func analyzeAppleModules(
+        in snapshot: SemanticProjectSnapshot,
+        importedAppleModules: Set<String>
+    ) async throws -> [AppleModuleUsage] {
+        let importCounts = snapshot.files.reduce(into: [String: Int]()) { counts, file in
+            for module in file.imports {
+                counts[module, default: 0] += 1
+            }
         }
-        
-        return dominant.0
+        let projectSymbolCounts = projectSymbolCounts(in: snapshot)
+
+        var usages: [AppleModuleUsage] = []
+        usages.reserveCapacity(importedAppleModules.count)
+
+        for moduleName in importedAppleModules.sorted() {
+            guard let module = try await sdkCatalog.module(named: moduleName) else {
+                continue
+            }
+
+            let matchedSymbols = module.symbolNames
+                .compactMap { symbolName -> (String, Int)? in
+                    guard let count = projectSymbolCounts[symbolName] else {
+                        return nil
+                    }
+                    return (symbolName, count)
+                }
+                .sorted {
+                    if $0.1 == $1.1 {
+                        return $0.0 < $1.0
+                    }
+                    return $0.1 > $1.1
+                }
+
+            let symbolHitCount = matchedSymbols.reduce(0) { $0 + $1.1 }
+            let sampleSymbols = matchedSymbols.prefix(12).map(\.0)
+            let importedDependencies = module.importedModules
+                .filter(importedAppleModules.contains)
+                .filter { $0 != moduleName }
+                .sorted()
+
+            usages.append(
+                AppleModuleUsage(
+                    moduleName: moduleName,
+                    importCount: importCounts[moduleName] ?? 0,
+                    kind: module.kind,
+                    platforms: module.platforms,
+                    symbolHitCount: symbolHitCount,
+                    matchedSymbols: sampleSymbols,
+                    importedDependencies: importedDependencies
+                )
+            )
+        }
+
+        return usages
     }
-    
-    // MARK: - Modern Features Analysis
-    
-    private func analyzeModernFeatures(in files: [URL]) async throws -> ModernFeatures {
-        var asyncAwaitUsage = 0
-        var actorUsage = 0
-        var combineUsage = 0
-        var swiftUIModifiers = 0
-        var propertyWrappers = 0
-        
-        for file in files {
-            let content = try String(contentsOf: file, encoding: .utf8)
-            
-            asyncAwaitUsage += countPattern(pattern: "async|await", in: content, isRegex: true)
-            actorUsage += countPattern(pattern: "actor\\s+", in: content, isRegex: true)
-            combineUsage += countPattern(pattern: "@Published|Publisher|PassthroughSubject", in: content, isRegex: true)
-            swiftUIModifiers += countPattern(pattern: "\\.onAppear|\\.onDisappear|\\.onChange", in: content, isRegex: true)
-            propertyWrappers += countPattern(pattern: "@State|@Binding|@ObservedObject|@EnvironmentObject", in: content, isRegex: true)
+
+    private func analyzeAppleIntelligence(
+        in snapshot: SemanticProjectSnapshot,
+        foundationModelsModule: AppleSDKModule?,
+        imagePlaygroundModule: AppleSDKModule?
+    ) -> AppleIntelligenceUsage {
+        let imports = Set(snapshot.importedModules)
+        let resolvedFoundationModelSymbols = resolvedSymbols(
+            requested: foundationModelSymbols.subtracting(["FoundationModels"]),
+            from: foundationModelsModule
+        )
+        let resolvedImagePlaygroundSymbols = resolvedSymbols(
+            requested: imagePlaygroundSymbols,
+            from: imagePlaygroundModule
+        )
+        let foundationModelSymbolHits = symbolHits(
+            for: resolvedFoundationModelSymbols,
+            in: snapshot
+        )
+        let imagePlaygroundSymbolHits = symbolHits(
+            for: resolvedImagePlaygroundSymbols,
+            in: snapshot
+        )
+
+        var foundationModelFeatures: [String] = []
+        if foundationModelSymbolHits["LanguageModelSession", default: 0] > 0 ||
+            foundationModelSymbolHits["SystemLanguageModel", default: 0] > 0 {
+            foundationModelFeatures.append("Session-based generation")
         }
-        
+        if foundationModelSymbolHits["Generable", default: 0] > 0 ||
+            foundationModelSymbolHits["GenerationSchema", default: 0] > 0 {
+            foundationModelFeatures.append("Structured generation")
+        }
+
+        var imagePlaygroundFeatures: [String] = []
+        if imagePlaygroundSymbolHits["ImageCreator", default: 0] > 0 {
+            imagePlaygroundFeatures.append("Programmatic image creation")
+        }
+        if imagePlaygroundSymbolHits["imagePlaygroundSheet", default: 0] > 0 {
+            imagePlaygroundFeatures.append("SwiftUI sheet presentation")
+        }
+        if imagePlaygroundSymbolHits["ImagePlaygroundConcept", default: 0] > 0 ||
+            imagePlaygroundSymbolHits["ImagePlaygroundStyle", default: 0] > 0 {
+            imagePlaygroundFeatures.append("Concept and style configuration")
+        }
+
+        return AppleIntelligenceUsage(
+            foundationModelsImports: imports.contains("FoundationModels") ? 1 : 0,
+            foundationModelSymbolHits: foundationModelSymbolHits,
+            foundationModelFeatures: foundationModelFeatures.sorted(),
+            imagePlaygroundImports: imports.contains("ImagePlayground") ? 1 : 0,
+            imagePlaygroundSymbolHits: imagePlaygroundSymbolHits,
+            imagePlaygroundFeatures: imagePlaygroundFeatures.sorted()
+        )
+    }
+
+    // MARK: - Modern Features Analysis
+
+    private func analyzeModernFeatures(in snapshot: SemanticProjectSnapshot) -> ModernFeatures {
+        let asyncAwaitUsage = snapshot.references.filter { ["async", "await"].contains($0.name) }.count
+        let actorUsage = snapshot.declarations.filter { $0.kind == "actor" }.count
+        let combineUsage = snapshot.files.filter { Set($0.imports).contains("Combine") }.count +
+            snapshot.types.filter(isObservableType).count
+        let swiftUIModifiers = snapshot.references.filter { swiftUIModifierNames.contains($0.name) }.count
+        let propertyWrappers = snapshot.declarations.reduce(into: 0) { count, declaration in
+            if !Set(declaration.attributes).intersection(propertyWrapperNames).isEmpty {
+                count += 1
+            }
+        }
+
         return ModernFeatures(
             asyncAwaitUsage: asyncAwaitUsage,
             actorUsage: actorUsage,
@@ -266,90 +338,103 @@ public class iOSFrameworkAnalysisEngine {
             )
         )
     }
-    
+
     private func calculateModernityScore(async: Int, actor: Int, combine: Int, swiftUI: Int, wrappers: Int) -> Double {
-        let total = async + actor + combine + swiftUI + wrappers
-        let maxPossible = 100 // Arbitrary baseline
-        return min(100.0, Double(total) / Double(maxPossible) * 100)
+        let totalSignals = async + actor + combine + swiftUI + wrappers
+        let baseline = max(1, snapshotBaselineCount())
+        return min(100.0, (Double(totalSignals) / Double(baseline)) * 100)
     }
-    
-    // MARK: - Helper Methods
-    
-    private func findSwiftFiles() throws -> [URL] {
-        let enumerator = fileManager.enumerator(
-            at: projectPath,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        )
-        
-        var swiftFiles: [URL] = []
-        
-        while let fileURL = enumerator?.nextObject() as? URL {
-            if fileURL.pathExtension == "swift" &&
-               !fileURL.path.contains(".build") {
-                swiftFiles.append(fileURL)
+
+    private func snapshotBaselineCount() -> Int {
+        max(10, projectPath.pathComponents.count * 5)
+    }
+
+    private func isObservableType(_ type: SemanticTypeSummary) -> Bool {
+        let attributes = Set(type.attributes).union(type.memberAttributes)
+        return Set(type.inheritedTypes).contains("ObservableObject") ||
+            attributes.contains("Observable") ||
+            attributes.contains("Published") ||
+            type.hasStateObjectWrapper
+    }
+
+    private func symbolHits(for symbols: Set<String>, in snapshot: SemanticProjectSnapshot) -> [String: Int] {
+        symbols.reduce(into: [String: Int]()) { counts, symbol in
+            let totalHits = snapshot.references.filter { $0.name == symbol }.count +
+                snapshot.declarations.filter { $0.name == symbol }.count
+            if totalHits > 0 {
+                counts[symbol] = totalHits
             }
         }
-        
-        return swiftFiles
     }
-    
-    private func countPattern(pattern: String, in content: String, isRegex: Bool = false) -> Int {
-        if isRegex {
-            do {
-                let regex = try NSRegularExpression(pattern: pattern, options: .caseInsensitive)
-                let range = NSRange(content.startIndex..., in: content)
-                return regex.numberOfMatches(in: content, range: range)
-            } catch {
-                logger.error("❌ Invalid regex pattern: \(pattern)")
-                return 0
-            }
-        } else {
-            return content.lowercased().components(separatedBy: pattern.lowercased()).count - 1
+
+    private func projectSymbolCounts(in snapshot: SemanticProjectSnapshot) -> [String: Int] {
+        var counts: [String: Int] = [:]
+
+        for declaration in snapshot.declarations {
+            counts[declaration.name, default: 0] += 1
         }
+
+        for reference in snapshot.references {
+            counts[reference.name, default: 0] += 1
+        }
+
+        return counts
     }
-    
+
+    private func resolvedSymbols(requested: Set<String>, from module: AppleSDKModule?) -> Set<String> {
+        guard let module else {
+            return requested
+        }
+
+        let availableSymbols = Set(module.symbolNames)
+        let resolved = requested.intersection(availableSymbols)
+        return resolved.isEmpty ? requested : resolved
+    }
+
     // MARK: - Recommendations
-    
+
     private func generateRecommendations(
         framework: FrameworkUsage,
         ui: UIPatterns,
         architecture: ArchitecturePatterns,
-        modern: ModernFeatures
+        modern: ModernFeatures,
+        appleModules: [AppleModuleUsage],
+        appleIntelligence: AppleIntelligenceUsage
     ) -> [String] {
         var recommendations: [String] = []
-        
-        // Framework recommendations
+
         if framework.swiftUI > 0 && framework.uiKit > framework.swiftUI {
-            recommendations.append("Consider migrating more components to SwiftUI for modern iOS development")
+            recommendations.append("The codebase mixes SwiftUI and UIKit; consider pushing more UI state into SwiftUI views or adapters.")
         }
-        
+
         if framework.combine == 0 && framework.swiftUI > 0 {
-            recommendations.append("Consider using Combine for reactive programming with SwiftUI")
+            recommendations.append("SwiftUI is present but Combine or Observation usage is limited; review whether explicit state models would clarify updates.")
         }
-        
-        // Architecture recommendations
-        if architecture.dominantPattern == "MVC (Default)" && (framework.swiftUI > 0 || ui.viewControllers > 5) {
-            recommendations.append("Consider implementing MVVM pattern for better separation of concerns")
-        }
-        
-        if architecture.coordinatorScore == 0 && ui.viewControllers > 3 {
-            recommendations.append("Consider implementing Coordinator pattern for navigation management")
-        }
-        
-        // Modern features recommendations
+
         if modern.asyncAwaitUsage == 0 {
-            recommendations.append("Consider adopting async/await for cleaner asynchronous code")
+            recommendations.append("No async/await usage was detected; review asynchronous APIs for modern concurrency adoption.")
         }
-        
+
         if modern.modernityScore < 30 {
-            recommendations.append("Project could benefit from adopting more modern Swift features")
+            recommendations.append("The iOS surface shows limited modern Swift signals; review actors, async/await, and explicit state wrappers where appropriate.")
         }
-        
-        if ui.storyboardUsage > ui.swiftUIViews && framework.swiftUI > 0 {
-            recommendations.append("Consider reducing storyboard usage in favor of SwiftUI")
+
+        if ui.storyboardUsage > 0 && framework.swiftUI > 0 {
+            recommendations.append("Both storyboard and SwiftUI navigation are present; reducing mixed navigation styles may simplify maintenance.")
         }
-        
+
+        for module in appleModules where module.importCount > 0 && module.symbolHitCount == 0 {
+            recommendations.append("\(module.moduleName) is imported, but no semantic symbol usage was detected in the current snapshot.")
+        }
+
+        if appleIntelligence.foundationModelsImports > 0 && appleIntelligence.foundationModelFeatures.isEmpty {
+            recommendations.append("Foundation Models is imported, but no core usage signals such as LanguageModelSession or Generable were detected.")
+        }
+
+        if appleIntelligence.imagePlaygroundImports > 0 && appleIntelligence.imagePlaygroundFeatures.isEmpty {
+            recommendations.append("ImagePlayground is imported, but no usage signals such as ImageCreator or imagePlaygroundSheet were detected.")
+        }
+
         return recommendations
     }
 }
@@ -361,6 +446,10 @@ public struct iOSAnalysisResult {
     public let uiPatterns: UIPatterns
     public let architecturePatterns: ArchitecturePatterns
     public let modernFeatures: ModernFeatures
+    public let appleModules: [AppleModuleUsage]
+    public let appleIntelligence: AppleIntelligenceUsage
+    public let sdkCatalog: AppleSDKCatalogSummary
+    public let documentationReferences: [DocumentationReference]
     public let recommendations: [String]
 }
 
@@ -371,6 +460,8 @@ public struct FrameworkUsage {
     public let combine: Int
     public let coreData: Int
     public let networking: Int
+    public let foundationModels: Int
+    public let imagePlayground: Int
     public let other: [String: Int]
     public let dominantFramework: String
 }
@@ -399,4 +490,29 @@ public struct ModernFeatures {
     public let swiftUIModifiers: Int
     public let propertyWrappers: Int
     public let modernityScore: Double
+}
+
+public struct AppleModuleUsage {
+    public let moduleName: String
+    public let importCount: Int
+    public let kind: AppleSDKModuleKind
+    public let platforms: [AppleSDKPlatform]
+    public let symbolHitCount: Int
+    public let matchedSymbols: [String]
+    public let importedDependencies: [String]
+}
+
+public struct AppleIntelligenceUsage {
+    public let foundationModelsImports: Int
+    public let foundationModelSymbolHits: [String: Int]
+    public let foundationModelFeatures: [String]
+    public let imagePlaygroundImports: Int
+    public let imagePlaygroundSymbolHits: [String: Int]
+    public let imagePlaygroundFeatures: [String]
+}
+
+public struct DocumentationReference: Hashable {
+    public let title: String
+    public let url: String
+    public let source: String
 }

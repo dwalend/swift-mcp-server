@@ -4,29 +4,30 @@ import Logging
 public final class MCPProtocolHandler {
     private let swiftLanguageServer: SwiftLanguageServer
     private let projectAnalyzer: ProjectAnalyzer
+    private let architectureAnalyzer: ArchitectureAnalyzer
+    private let symbolSearchEngine: SymbolSearchEngine
     private let projectMemory: IntelligentProjectMemory
     private let documentationGenerator: DocumentationGenerator
     private let iOSFrameworkAnalyzer: iOSFrameworkAnalysisEngine
     private let templateGenerator: TemplateGenerator
     private let logger: Logger
-    
+
     public init(swiftLanguageServer: SwiftLanguageServer, logger: Logger) {
         self.swiftLanguageServer = swiftLanguageServer
         self.logger = logger
-        
-        // Initialize project analyzer
+
         self.projectAnalyzer = ProjectAnalyzer(projectPath: swiftLanguageServer.workspaceURL, logger: logger)
-        
-        // Initialize analysis modules
+        self.architectureAnalyzer = ArchitectureAnalyzer(projectPath: swiftLanguageServer.workspaceURL, logger: logger)
+        self.symbolSearchEngine = SymbolSearchEngine(projectPath: swiftLanguageServer.workspaceURL, logger: logger)
         self.projectMemory = IntelligentProjectMemory(projectPath: swiftLanguageServer.workspaceURL, logger: logger)
         self.documentationGenerator = DocumentationGenerator(projectPath: swiftLanguageServer.workspaceURL, logger: logger)
         self.iOSFrameworkAnalyzer = iOSFrameworkAnalysisEngine(projectPath: swiftLanguageServer.workspaceURL, logger: logger)
         self.templateGenerator = TemplateGenerator(projectPath: swiftLanguageServer.workspaceURL, logger: logger)
     }
-    
+
     public func handleRequest(_ request: MCPRequest) async throws -> MCPResponse {
         logger.debug("Handling MCP request: \(request.method)")
-        
+
         switch request.method {
         case "initialize":
             return try await handleInitialize(request)
@@ -42,15 +43,15 @@ public final class MCPProtocolHandler {
             throw MCPError.methodNotFound(request.method)
         }
     }
-    
+
     // MARK: - Initialize
-    
+
     private func handleInitialize(_ request: MCPRequest) async throws -> MCPResponse {
         let capabilities = ServerCapabilities(
             tools: ToolsCapability(listChanged: true),
             resources: ResourcesCapability(subscribe: true, listChanged: true)
         )
-        
+
         let result = InitializeResult(
             protocolVersion: "2024-11-05",
             capabilities: capabilities,
@@ -59,16 +60,12 @@ public final class MCPProtocolHandler {
                 version: "1.0.0"
             )
         )
-        
-        return MCPResponse(
-            jsonrpc: "2.0",
-            id: request.id,
-            result: try JSONSerialization.data(withJSONObject: toDictionary(result))
-        )
+
+        return try makeResponse(id: request.id, result: result)
     }
-    
+
     // MARK: - Tools
-    
+
     private func handleToolsList(_ request: MCPRequest) async throws -> MCPResponse {
         let tools = [
             Tool(
@@ -170,22 +167,28 @@ public final class MCPProtocolHandler {
                 ]
             ),
             Tool(
-                name: "analyze_project",
-                description: "Perform comprehensive project analysis including architecture detection",
+                name: "get_diagnostics",
+                description: "Get SourceKit-LSP diagnostics for a Swift document",
                 inputSchema: [
                     "type": "object",
-                    "properties": [:],
-                    "required": []
+                    "properties": [
+                        "file_path": [
+                            "type": "string",
+                            "description": "Path to the Swift file"
+                        ]
+                    ],
+                    "required": ["file_path"]
                 ]
+            ),
+            Tool(
+                name: "analyze_project",
+                description: "Perform comprehensive project analysis including architecture detection",
+                inputSchema: projectPathInputSchema()
             ),
             Tool(
                 name: "detect_architecture",
                 description: "Detect the architecture pattern used in the project",
-                inputSchema: [
-                    "type": "object",
-                    "properties": [:],
-                    "required": []
-                ]
+                inputSchema: projectPathInputSchema()
             ),
             Tool(
                 name: "analyze_symbol_usage",
@@ -196,6 +199,10 @@ public final class MCPProtocolHandler {
                         "symbol_name": [
                             "type": "string",
                             "description": "Name of the symbol to analyze"
+                        ],
+                        "project_path": [
+                            "type": "string",
+                            "description": "Optional path to the project. Defaults to the current workspace."
                         ]
                     ],
                     "required": ["symbol_name"]
@@ -204,14 +211,10 @@ public final class MCPProtocolHandler {
             Tool(
                 name: "create_project_memory",
                 description: "Create comprehensive project documentation and memory",
-                inputSchema: [
-                    "type": "object",
-                    "properties": [:],
-                    "required": []
-                ]
+                inputSchema: projectPathInputSchema()
             ),
             Tool(
-                name: "generate_migration_plan", 
+                name: "generate_migration_plan",
                 description: "Generate a plan to migrate to a different architecture pattern",
                 inputSchema: [
                     "type": "object",
@@ -219,6 +222,10 @@ public final class MCPProtocolHandler {
                         "target_architecture": [
                             "type": "string",
                             "description": "Target architecture pattern (mvvm, features_based, viper, clean_architecture)"
+                        ],
+                        "project_path": [
+                            "type": "string",
+                            "description": "Optional path to the project. Defaults to the current workspace."
                         ]
                     ],
                     "required": ["target_architecture"]
@@ -227,16 +234,7 @@ public final class MCPProtocolHandler {
             Tool(
                 name: "analyze_pop_usage",
                 description: "Analyze project's Protocol-Oriented Programming (POP) adoption",
-                inputSchema: [
-                    "type": "object",
-                    "properties": [
-                        "project_path": [
-                            "type": "string",
-                            "description": "Path to the project to analyze"
-                        ]
-                    ],
-                    "required": ["project_path"]
-                ]
+                inputSchema: projectPathInputSchema()
             ),
             Tool(
                 name: "intelligent_project_memory",
@@ -249,7 +247,7 @@ public final class MCPProtocolHandler {
                             "description": "Action to perform: cache, retrieve, learn_patterns, get_evolution"
                         ],
                         "key": [
-                            "type": "string", 
+                            "type": "string",
                             "description": "Key for caching/retrieving analysis results"
                         ]
                     ],
@@ -259,20 +257,12 @@ public final class MCPProtocolHandler {
             Tool(
                 name: "generate_documentation",
                 description: "Generate comprehensive project documentation including README and API docs",
-                inputSchema: [
-                    "type": "object",
-                    "properties": [:],
-                    "required": []
-                ]
+                inputSchema: projectPathInputSchema()
             ),
             Tool(
                 name: "analyze_ios_frameworks",
                 description: "Analyze iOS framework usage and detect UI patterns",
-                inputSchema: [
-                    "type": "object",
-                    "properties": [:],
-                    "required": []
-                ]
+                inputSchema: projectPathInputSchema()
             ),
             Tool(
                 name: "generate_template",
@@ -297,28 +287,23 @@ public final class MCPProtocolHandler {
                 ]
             )
         ]
-        
-        let result = ToolsListResult(tools: tools)
-        return MCPResponse(
-            jsonrpc: "2.0",
-            id: request.id,
-            result: try JSONSerialization.data(withJSONObject: toDictionary(result))
-        )
+
+        return try makeResponse(id: request.id, result: ToolsListResult(tools: tools))
     }
-    
+
     private func handleToolCall(_ request: MCPRequest) async throws -> MCPResponse {
         guard let params = request.params else {
             throw MCPError.invalidParams
         }
-        
-        guard let name = params["name"] as? String else {
+
+        guard let name = params.string("name") else {
             throw MCPError.invalidParams
         }
-        
-        let arguments = params["arguments"] as? [String: Any] ?? [:]
-        
+
+        let arguments = params.object("arguments") ?? [:]
+
         let result: Any
-        
+
         switch name {
         case "find_symbols":
             result = try await handleFindSymbols(arguments)
@@ -330,6 +315,8 @@ public final class MCPProtocolHandler {
             result = try await handleGetHoverInfo(arguments)
         case "format_document":
             result = try await handleFormatDocument(arguments)
+        case "get_diagnostics":
+            result = try await handleGetDiagnostics(arguments)
         case "analyze_project":
             result = try await handleAnalyzeProject(arguments)
         case "detect_architecture":
@@ -353,87 +340,95 @@ public final class MCPProtocolHandler {
         default:
             throw MCPError.toolNotFound(name)
         }
-        
+
         let toolResult = ToolCallResult(
             content: [
-                ToolContent(type: "text", text: String(describing: result))
+                ToolContent(type: "text", text: renderToolResult(result))
             ]
         )
-        
-        return MCPResponse(
-            jsonrpc: "2.0",
-            id: request.id,
-            result: try JSONSerialization.data(withJSONObject: toDictionary(toolResult))
-        )
+
+        return try makeResponse(id: request.id, result: toolResult)
     }
-    
+
     // MARK: - Tool Implementations
-    
-    private func handleFindSymbols(_ arguments: [String: Any]) async throws -> [SymbolInfo] {
-        guard let filePath = arguments["file_path"] as? String,
-              let namePattern = arguments["name_pattern"] as? String else {
+
+    private func handleFindSymbols(_ arguments: JSONObject) async throws -> [SymbolInfo] {
+        guard let filePath = arguments.string("file_path"),
+              let namePattern = arguments.string("name_pattern") else {
             throw MCPError.invalidParams
         }
-        
+
         return try await swiftLanguageServer.findSymbols(in: filePath, namePattern: namePattern)
     }
-    
-    private func handleFindReferences(_ arguments: [String: Any]) async throws -> [String] {
-        guard let filePath = arguments["file_path"] as? String,
-              let line = arguments["line"] as? Int,
-              let character = arguments["character"] as? Int else {
+
+    private func handleFindReferences(_ arguments: JSONObject) async throws -> [String] {
+        guard let filePath = arguments.string("file_path"),
+              let line = arguments.int("line"),
+              let character = arguments.int("character") else {
             throw MCPError.invalidParams
         }
-        
+
         let position = Position(line: line, character: character)
         let locations = try await swiftLanguageServer.findReferences(at: position, in: filePath)
-        
+
         return locations.map { "\($0.uri):\($0.line):\($0.character)" }
     }
-    
-    private func handleGetDefinition(_ arguments: [String: Any]) async throws -> [String] {
-        guard let filePath = arguments["file_path"] as? String,
-              let line = arguments["line"] as? Int,
-              let character = arguments["character"] as? Int else {
+
+    private func handleGetDefinition(_ arguments: JSONObject) async throws -> [String] {
+        guard let filePath = arguments.string("file_path"),
+              let line = arguments.int("line"),
+              let character = arguments.int("character") else {
             throw MCPError.invalidParams
         }
-        
+
         let position = Position(line: line, character: character)
         let locations = try await swiftLanguageServer.getDefinition(at: position, in: filePath)
-        
+
         return locations.map { "\($0.targetUri):\($0.targetRange.start.line):\($0.targetRange.start.character)" }
     }
-    
-    private func handleGetHoverInfo(_ arguments: [String: Any]) async throws -> String {
-        guard let filePath = arguments["file_path"] as? String,
-              let line = arguments["line"] as? Int,
-              let character = arguments["character"] as? Int else {
+
+    private func handleGetHoverInfo(_ arguments: JSONObject) async throws -> String {
+        guard let filePath = arguments.string("file_path"),
+              let line = arguments.int("line"),
+              let character = arguments.int("character") else {
             throw MCPError.invalidParams
         }
-        
+
         let position = Position(line: line, character: character)
         let hover = try await swiftLanguageServer.getHover(at: position, in: filePath)
-        
+
         if case .markupContent(let content) = hover?.contents {
             return content.value
         } else if case .markedString(let string) = hover?.contents {
             return string.value
         }
-        
+
         return "No hover information available"
     }
-    
-    private func handleFormatDocument(_ arguments: [String: Any]) async throws -> [String] {
-        guard let filePath = arguments["file_path"] as? String else {
+
+    private func handleFormatDocument(_ arguments: JSONObject) async throws -> [String] {
+        guard let filePath = arguments.string("file_path") else {
             throw MCPError.invalidParams
         }
-        
+
         let edits = try await swiftLanguageServer.formatDocument(at: filePath)
         return edits.map { "Line \($0.range.start.line): \($0.newText)" }
     }
-    
+
+    private func handleGetDiagnostics(_ arguments: JSONObject) async throws -> [String] {
+        guard let filePath = arguments.string("file_path") else {
+            throw MCPError.invalidParams
+        }
+
+        let diagnostics = try await swiftLanguageServer.getDiagnostics(for: filePath)
+        return diagnostics.map {
+            let severity = $0.severity.map { String(describing: $0).lowercased() } ?? "unknown"
+            return "\($0.range.start.line):\($0.range.start.character) [\(severity)] \($0.message)"
+        }
+    }
+
     // MARK: - Resources
-    
+
     private func handleResourcesList(_ request: MCPRequest) async throws -> MCPResponse {
         let resources = [
             Resource(
@@ -443,23 +438,18 @@ public final class MCPProtocolHandler {
                 mimeType: "application/json"
             )
         ]
-        
-        let result = ResourcesListResult(resources: resources)
-        return MCPResponse(
-            jsonrpc: "2.0",
-            id: request.id,
-            result: try JSONSerialization.data(withJSONObject: toDictionary(result))
-        )
+
+        return try makeResponse(id: request.id, result: ResourcesListResult(resources: resources))
     }
-    
+
     private func handleResourceRead(_ request: MCPRequest) async throws -> MCPResponse {
         guard let params = request.params,
-              let uri = params["uri"] as? String else {
+              let uri = params.string("uri") else {
             throw MCPError.invalidParams
         }
-        
+
         let content: String
-        
+
         switch uri {
         case "swift://workspace":
             content = """
@@ -472,7 +462,7 @@ public final class MCPProtocolHandler {
         default:
             throw MCPError.resourceNotFound(uri)
         }
-        
+
         let result = ResourceReadResult(
             contents: [
                 ResourceContent(
@@ -482,56 +472,42 @@ public final class MCPProtocolHandler {
                 )
             ]
         )
-        
-        return MCPResponse(
-            jsonrpc: "2.0",
-            id: request.id,
-            result: try JSONSerialization.data(withJSONObject: toDictionary(result))
-        )
+
+        return try makeResponse(id: request.id, result: result)
     }
-    
+
     // MARK: - Enhanced Analysis Tools
-    
-    private func handleAnalyzeProject(_ arguments: [String: Any]) async throws -> String {
-        guard let projectPath = arguments["path"] as? String ?? arguments["project_path"] as? String else {
-            throw MCPError.invalidParams
-        }
-        
-        let projectURL = URL(fileURLWithPath: projectPath)
-        let analyzer = ProjectAnalyzer(projectPath: projectURL, logger: logger)
+
+    private func handleAnalyzeProject(_ arguments: JSONObject) async throws -> String {
+        let projectURL = resolveProjectURL(from: arguments)
+        let analyzer = projectAnalyzer(for: projectURL)
         let analysis = try await analyzer.analyzeProject()
-        
+
         return """
-        Project Analysis for: \(projectPath)
+        Project Analysis for: \(projectURL.path)
         Architecture: \(analysis.architecturePattern.rawValue)
         Modules: \(analysis.structure.modules.count)
         Features: \(analysis.structure.features.count)
         Metrics: \(analysis.metrics.totalFiles) files, \(analysis.metrics.totalLines) lines
         """
     }
-    
-    private func handleDetectArchitecture(_ arguments: [String: Any]) async throws -> String {
-        guard let projectPath = arguments["path"] as? String ?? arguments["project_path"] as? String else {
-            throw MCPError.invalidParams
-        }
-        
-        let projectURL = URL(fileURLWithPath: projectPath)
-        let analyzer = ArchitectureAnalyzer(projectPath: projectURL, logger: logger)
+
+    private func handleDetectArchitecture(_ arguments: JSONObject) async throws -> String {
+        let analyzer = architectureAnalyzer(for: resolveProjectURL(from: arguments))
         let pattern = try await analyzer.detectArchitecturePattern()
-        
+
         return pattern.rawValue
     }
-    
-    private func handleAnalyzeSymbolUsage(_ arguments: [String: Any]) async throws -> String {
-        guard let projectPath = arguments["path"] as? String ?? arguments["project_path"] as? String,
-              let symbolName = arguments["symbol_name"] as? String else {
+
+    private func handleAnalyzeSymbolUsage(_ arguments: JSONObject) async throws -> String {
+        guard let symbolName = arguments.string("symbol_name") else {
             throw MCPError.invalidParams
         }
-        
-        let projectURL = URL(fileURLWithPath: projectPath)
-        let symbolEngine = SymbolSearchEngine(projectPath: projectURL, logger: logger)
+
+        let projectURL = resolveProjectURL(from: arguments)
+        let symbolEngine = symbolSearchEngine(for: projectURL)
         let usage = try await symbolEngine.analyzeSymbolUsage(symbolName: symbolName)
-        
+
         return """
         Symbol Usage Analysis for: \(symbolName)
         Total occurrences: \(usage.totalReferences)
@@ -539,16 +515,11 @@ public final class MCPProtocolHandler {
         Usage patterns: \(usage.usagePatterns.keys.joined(separator: ", "))
         """
     }
-    
-    private func handleCreateProjectMemory(_ arguments: [String: Any]) async throws -> String {
-        guard let projectPath = arguments["project_path"] as? String else {
-            throw MCPError.invalidParams
-        }
-        
-        let projectURL = URL(fileURLWithPath: projectPath)
-        let analyzer = ProjectAnalyzer(projectPath: projectURL, logger: logger)
+
+    private func handleCreateProjectMemory(_ arguments: JSONObject) async throws -> String {
+        let analyzer = projectAnalyzer(for: resolveProjectURL(from: arguments))
         let memory = try await analyzer.createProjectMemory()
-        
+
         return """
         Project Memory Created:
         Project: \(memory.analysis.projectName)
@@ -558,110 +529,104 @@ public final class MCPProtocolHandler {
         Last Updated: \(memory.lastUpdated)
         """
     }
-    
-    private func handleGenerateMigrationPlan(_ arguments: [String: Any]) async throws -> String {
-        guard let projectPath = arguments["project_path"] as? String,
-              let targetArchitecture = arguments["target_architecture"] as? String else {
+
+    private func handleGenerateMigrationPlan(_ arguments: JSONObject) async throws -> String {
+        guard let targetArchitecture = arguments.string("target_architecture") else {
             throw MCPError.invalidParams
         }
-        
+
         guard let targetPattern = ArchitecturePattern(rawValue: targetArchitecture) else {
             throw MCPError.invalidParams
         }
-        
-        let projectURL = URL(fileURLWithPath: projectPath)
-        let analyzer = ProjectAnalyzer(projectPath: projectURL, logger: logger)
+
+        let analyzer = projectAnalyzer(for: resolveProjectURL(from: arguments))
         let plan = try await analyzer.generateMigrationPlan(to: targetPattern)
-        
+
         return """
         Migration Plan from \(plan.from.rawValue) to \(plan.to.rawValue):
-        
+
         Steps: \(plan.steps.count) migration steps
         Estimated effort: \(plan.estimatedEffort)
         Risks: \(plan.risks.count) identified
         Benefits: \(plan.benefits.count) expected benefits
-        
+
         First Steps:
         \(plan.steps.prefix(3).map { "• \($0.title): \($0.description)" }.joined(separator: "\n"))
         """
     }
-    
-    private func handleAnalyzePOPUsage(_ arguments: [String: Any]) async throws -> String {
-        guard let projectPath = arguments["project_path"] as? String else {
-            throw MCPError.invalidParams
-        }
-        
-        let projectURL = URL(fileURLWithPath: projectPath)
-        let analyzer = ArchitectureAnalyzer(projectPath: projectURL, logger: logger)
+
+    private func handleAnalyzePOPUsage(_ arguments: JSONObject) async throws -> String {
+        let projectURL = resolveProjectURL(from: arguments)
+        let analyzer = architectureAnalyzer(for: projectURL)
         let analysis = try await analyzer.analyzePOPUsage()
-        
+
         return """
-        🔍 Protocol-Oriented Programming Analysis for: \(projectPath)
-        
+        🔍 Protocol-Oriented Programming Analysis for: \(projectURL.path)
+
         📊 Overview:
         • Total Swift files: \(analysis.totalFiles)
         • POP Score: \(analysis.popScore)/100 (\(analysis.adoptionLevel.rawValue))
         • Struct vs Class ratio: \(analysis.structUsage):\(analysis.classUsage)
-        
+
         📈 Protocol Usage:
         • Protocol definitions: \(analysis.protocolDefinitions)
-        • Protocol extensions: \(analysis.protocolExtensions)  
+        • Protocol extensions: \(analysis.protocolExtensions)
         • Protocol conformances: \(analysis.protocolConformances)
         • Protocol as types: \(analysis.protocolAsTypeUsage)
-        
+
         🎯 POP Patterns Found:
         \(analysis.popPatterns.isEmpty ? "None detected" : analysis.popPatterns.map { "• \($0)" }.joined(separator: "\n"))
-        
+
         💡 Recommendations:
         \(analysis.recommendations.map { "• \($0)" }.joined(separator: "\n"))
         """
     }
-    
+
     // MARK: - Analysis Tool Handlers
-    
-    private func handleIntelligentProjectMemory(_ arguments: [String: Any]) async throws -> String {
-        guard let action = arguments["action"] as? String else {
-            throw MCPError.internalError
+
+    private func handleIntelligentProjectMemory(_ arguments: JSONObject) async throws -> String {
+        guard let action = arguments.string("action") else {
+            throw MCPError.invalidParams
         }
-        
+
         switch action {
         case "cache":
-            if let key = arguments["key"] as? String {
-                let result = IntelligentAnalysisResult(
-                    timestamp: Date(),
-                    analysisType: "generic_analysis",
-                    result: Data("analysis_data".utf8),
-                    checksum: "demo_checksum"
-                )
-                await projectMemory.cacheAnalysis(result, for: key)
-                return "✅ Analysis cached for key: \(key)"
-            } else {
-                throw MCPError.internalError
+            guard let key = arguments.string("key") else {
+                throw MCPError.invalidParams
             }
-            
+
+            let result = IntelligentAnalysisResult(
+                timestamp: Date(),
+                analysisType: "generic_analysis",
+                result: Data("analysis_data".utf8),
+                checksum: "demo_checksum"
+            )
+            await projectMemory.cacheAnalysis(result, for: key)
+            return "✅ Analysis cached for key: \(key)"
+
         case "retrieve":
-            if let key = arguments["key"] as? String {
-                if let cached = await projectMemory.getCachedAnalysis(for: key) {
-                    return """
-                    📋 Cached Analysis for key: \(key)
-                    • Timestamp: \(cached.timestamp)
-                    • Type: \(cached.analysisType)
-                    • Checksum: \(cached.checksum)
-                    """
-                } else {
-                    return "❌ No cached analysis found for key: \(key)"
-                }
-            } else {
-                throw MCPError.internalError
+            guard let key = arguments.string("key") else {
+                throw MCPError.invalidParams
             }
-            
+
+            if let cached = await projectMemory.getCachedAnalysis(for: key) {
+                return """
+                📋 Cached Analysis for key: \(key)
+                • Timestamp: \(cached.timestamp)
+                • Type: \(cached.analysisType)
+                • Checksum: \(cached.checksum)
+                """
+            }
+
+            return "❌ No cached analysis found for key: \(key)"
+
         case "learn_patterns":
             let patterns = await projectMemory.getMostCommonPatterns()
             return """
             🧠 Learned Patterns (\(patterns.count) total):
             \(patterns.map { "• \($0.key.rawValue): \($0.value) occurrences" }.joined(separator: "\n"))
             """
-            
+
         case "get_evolution":
             return """
             📈 Project Evolution:
@@ -669,105 +634,192 @@ public final class MCPProtocolHandler {
             • Pattern learning: Active
             • Memory system: Operational
             """
-            
+
         default:
-            throw MCPError.internalError
+            throw MCPError.invalidParams
         }
     }
-    
-    private func handleGenerateDocumentation(_ arguments: [String: Any]) async throws -> String {
-        let result = try await documentationGenerator.generateProjectDocumentation()
-        
+
+    private func handleGenerateDocumentation(_ arguments: JSONObject) async throws -> String {
+        let generator = DocumentationGenerator(projectPath: resolveProjectURL(from: arguments), logger: logger)
+        let result = try await generator.generateProjectDocumentation()
+
         return """
         📚 Documentation Generated Successfully!
-        
+
         📄 Generated Files:
         \(result.generatedFiles.map { "• \($0)" }.joined(separator: "\n"))
-        
+
         📊 Project Structure:
         • Name: \(result.projectStructure.name)
         • Type: \(result.projectStructure.type)
         • Swift files: \(result.projectStructure.swiftFileCount)
         • Has Package.swift: \(result.projectStructure.hasPackageSwift)
-        
+
         🔍 API Documentation:
         • Total API items: \(result.apiDocumentation.count)
         • Classes: \(result.apiDocumentation.filter { $0.type == .classType }.count)
         • Structs: \(result.apiDocumentation.filter { $0.type == .structType }.count)
         • Functions: \(result.apiDocumentation.filter { $0.type == .function }.count)
-        
+
         ✅ README.md has been generated and saved to the project root.
         """
     }
-    
-    private func handleAnalyzeiOSFrameworks(_ arguments: [String: Any]) async throws -> String {
-        let result = try await iOSFrameworkAnalyzer.analyzeIOSPatterns()
-        
+
+    private func handleAnalyzeiOSFrameworks(_ arguments: JSONObject) async throws -> String {
+        let analyzer = iOSFrameworkAnalyzer(for: resolveProjectURL(from: arguments))
+        let result = try await analyzer.analyzeIOSPatterns()
+
         return """
         📱 iOS Framework Analysis Results
-        
+
+        🧭 Apple SDK Catalog:
+        • Xcode: \(result.sdkCatalog.xcodeVersion ?? "Unknown")
+        • Cataloged modules: \(result.sdkCatalog.moduleCount)
+        • Platforms: \(result.sdkCatalog.platforms.map { $0.platform.rawValue }.joined(separator: ", "))
+
         🛠️ Framework Usage:
         • UIKit: \(result.frameworkUsage.uiKit) imports
-        • SwiftUI: \(result.frameworkUsage.swiftUI) imports  
+        • SwiftUI: \(result.frameworkUsage.swiftUI) imports
         • Foundation: \(result.frameworkUsage.foundation) imports
         • Combine: \(result.frameworkUsage.combine) imports
         • Core Data: \(result.frameworkUsage.coreData) imports
         • Networking: \(result.frameworkUsage.networking) imports
+        • Foundation Models: \(result.frameworkUsage.foundationModels) imports
+        • Image Playground: \(result.frameworkUsage.imagePlayground) imports
         • Dominant framework: \(result.frameworkUsage.dominantFramework)
-        
+
         🎨 UI Patterns:
         • View Controllers: \(result.uiPatterns.viewControllers)
         • SwiftUI Views: \(result.uiPatterns.swiftUIViews)
         • Storyboard usage: \(result.uiPatterns.storyboardUsage)
         • AutoLayout usage: \(result.uiPatterns.autolayoutUsage)
         • Primary UI: \(result.uiPatterns.primaryUIFramework)
-        
+
         🏗️ Architecture:
         • MVVM Score: \(result.architecturePatterns.mvvmScore)
         • MVP Score: \(result.architecturePatterns.mvpScore)
         • VIPER Score: \(result.architecturePatterns.viperScore)
         • Coordinator Score: \(result.architecturePatterns.coordinatorScore)
         • Dominant pattern: \(result.architecturePatterns.dominantPattern)
-        
+
         ⚡ Modern Features:
         • Async/await usage: \(result.modernFeatures.asyncAwaitUsage)
         • Actor usage: \(result.modernFeatures.actorUsage)
         • Combine usage: \(result.modernFeatures.combineUsage)
         • Modernity score: \(result.modernFeatures.modernityScore)
-        
+
+        🍎 Apple Modules:
+        \(result.appleModules.isEmpty ? "• None detected" : result.appleModules.map {
+            let symbols = $0.matchedSymbols.isEmpty ? "no symbol hits" : $0.matchedSymbols.joined(separator: ", ")
+            return "• \($0.moduleName): imports=\($0.importCount), symbolHits=\($0.symbolHitCount), symbols=\(symbols)"
+        }.joined(separator: "\n"))
+
+        🧠 Apple Intelligence:
+        • Foundation Models features: \(result.appleIntelligence.foundationModelFeatures.isEmpty ? "None detected" : result.appleIntelligence.foundationModelFeatures.joined(separator: ", "))
+        • Foundation Models symbols: \(result.appleIntelligence.foundationModelSymbolHits.isEmpty ? "None" : result.appleIntelligence.foundationModelSymbolHits.keys.sorted().joined(separator: ", "))
+        • Image Playground features: \(result.appleIntelligence.imagePlaygroundFeatures.isEmpty ? "None detected" : result.appleIntelligence.imagePlaygroundFeatures.joined(separator: ", "))
+        • Image Playground symbols: \(result.appleIntelligence.imagePlaygroundSymbolHits.isEmpty ? "None" : result.appleIntelligence.imagePlaygroundSymbolHits.keys.sorted().joined(separator: ", "))
+
+        📚 Official References:
+        \(result.documentationReferences.map { "• \($0.title): \($0.url)" }.joined(separator: "\n"))
+
         💡 Recommendations:
         \(result.recommendations.map { "• \($0)" }.joined(separator: "\n"))
         """
     }
-    
-    private func handleGenerateTemplate(_ arguments: [String: Any]) async throws -> String {
-        guard let templateTypeString = arguments["template_type"] as? String,
-              let name = arguments["name"] as? String else {
-            throw MCPError.internalError
+
+    private func handleGenerateTemplate(_ arguments: JSONObject) async throws -> String {
+        guard let templateTypeString = arguments.string("template_type"),
+              let name = arguments.string("name") else {
+            throw MCPError.invalidParams
         }
-        
+
         guard let templateType = TemplateType(rawValue: templateTypeString) else {
-            throw MCPError.internalError
+            throw MCPError.invalidParams
         }
-        
-        let description = arguments["description"] as? String
+
+        let description = arguments.string("description")
         let options = TemplateOptions(description: description)
-        
+
         let result = try await templateGenerator.generateTemplate(templateType, name: name, options: options)
-        
+
         return """
         🛠️ Template Generated Successfully!
-        
+
         📄 Template: \(result.templateType.displayName)
         📁 Name: \(name)
-        
+
         📝 Generated Files (\(result.generatedFiles.count)):
         \(result.generatedFiles.map { "• \($0)" }.joined(separator: "\n"))
-        
+
         📋 Next Steps:
         \(result.instructions.map { "• \($0)" }.joined(separator: "\n"))
-        
+
         ✅ Template files have been created in your project directory.
         """
+    }
+
+    // MARK: - Helpers
+
+    private func makeResponse<T: Encodable>(id: RequestID?, result: T) throws -> MCPResponse {
+        MCPResponse(id: id, result: try JSONValue.fromEncodable(result))
+    }
+
+    private func resolveProjectURL(from arguments: JSONObject) -> URL {
+        if let projectPath = arguments.string("path") ?? arguments.string("project_path") {
+            return URL(fileURLWithPath: projectPath)
+        }
+
+        return swiftLanguageServer.workspaceURL
+    }
+
+    private func projectAnalyzer(for projectURL: URL) -> ProjectAnalyzer {
+        isCurrentWorkspace(projectURL) ? projectAnalyzer : ProjectAnalyzer(projectPath: projectURL, logger: logger)
+    }
+
+    private func architectureAnalyzer(for projectURL: URL) -> ArchitectureAnalyzer {
+        isCurrentWorkspace(projectURL) ? architectureAnalyzer : ArchitectureAnalyzer(projectPath: projectURL, logger: logger)
+    }
+
+    private func symbolSearchEngine(for projectURL: URL) -> SymbolSearchEngine {
+        isCurrentWorkspace(projectURL) ? symbolSearchEngine : SymbolSearchEngine(projectPath: projectURL, logger: logger)
+    }
+
+    private func iOSFrameworkAnalyzer(for projectURL: URL) -> iOSFrameworkAnalysisEngine {
+        isCurrentWorkspace(projectURL) ? iOSFrameworkAnalyzer : iOSFrameworkAnalysisEngine(projectPath: projectURL, logger: logger)
+    }
+
+    private func isCurrentWorkspace(_ projectURL: URL) -> Bool {
+        projectURL.standardizedFileURL.resolvingSymlinksInPath() ==
+            swiftLanguageServer.workspaceURL.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    private func projectPathInputSchema() -> JSONObject {
+        [
+            "type": "object",
+            "properties": [
+                "project_path": [
+                    "type": "string",
+                    "description": "Optional path to the project. Defaults to the current workspace."
+                ]
+            ],
+            "required": []
+        ]
+    }
+
+    private func renderToolResult(_ result: Any) -> String {
+        switch result {
+        case let string as String:
+            return string
+        case let strings as [String]:
+            return strings.joined(separator: "\n")
+        case let symbols as [SymbolInfo]:
+            return symbols.map {
+                "\($0.kind) \($0.name) @ \($0.location.uri):\($0.location.line):\($0.location.character)"
+            }.joined(separator: "\n")
+        default:
+            return String(describing: result)
+        }
     }
 }

@@ -2,9 +2,9 @@
 
 ## Available Configurations
 
-### 1. VS Code MCP Configuration (`vscode-mcp-config.json`)
-Complete VS Code MCP integration with troubleshooting guide.
-- **Purpose**: Direct integration with VS Code MCP extension
+### 1. MCP STDIO Configuration for AI Clients (`vscode-mcp-config.json`)
+Complete MCP `stdio` integration example for AI/editor clients.
+- **Purpose**: Direct integration with VS Code, Cursor, Claude-style MCP clients, and similar tools
 - **Transport**: STDIO (required for VS Code)
 - **Features**: Complete troubleshooting documentation, debugging steps, configuration variations
 
@@ -24,16 +24,22 @@ Enterprise HTTP transport configuration for web integrations.
 
 ## Usage Examples
 
-### VS Code Integration
+### MCP Client Integration
 ```bash
-# Use vscode-mcp-config.json settings in VS Code settings.json
-cp vscode-mcp-config.json ~/.vscode/settings-template.json
+# Reuse the example JSON in your MCP-capable AI/editor client config
+cp vscode-mcp-config.json ~/mcp-client-settings-template.json
 ```
 
 ### Serena Integration
 ```bash
 swift-mcp-server --config stdio-config.json --transport stdio
 ```
+
+### Generic AI Client Integration
+```bash
+swift-mcp-server --transport stdio --workspace /path/to/project
+```
+Use this command in any local AI client that can spawn MCP servers over `stdio`.
 
 ### HTTP API Server
 ```bash
@@ -42,9 +48,9 @@ swift-mcp-server --config http-config.json --transport http --port 9000
 
 ## Quick Setup
 
-For immediate setup, use the provided scripts:
+For immediate setup, use the supported management script:
 ```bash
-./quick-start.sh     # Interactive setup with config selection
-./quick-fix.sh all   # Fix common configuration issues
-./health-check.sh    # Verify system configuration
+./swift-mcp.sh       # Build and bootstrap the local setup
+./swift-mcp.sh health
+./swift-mcp.sh vscode
 ```
