@@ -11,13 +11,18 @@ public final class StdioTransport: @unchecked Sendable {
     private let shutdownLock = NSLock()
     private var hasShutdown = false
 
-    public init(logger: Logger, workspaceRoot: URL? = nil) {
+    public init(
+        logger: Logger,
+        workspaceRoot: URL? = nil,
+        runtimeConfiguration: MCPRuntimeConfiguration = MCPRuntimeConfiguration()
+    ) {
         self.logger = logger
         self.modernConcurrency = ModernConcurrencyIntegration(logger: logger)
         self.swiftLanguageServer = SwiftLanguageServer(logger: logger, workspaceRoot: workspaceRoot)
         self.mcpProtocolHandler = MCPProtocolHandler(
             swiftLanguageServer: swiftLanguageServer,
-            logger: logger
+            logger: logger,
+            runtimeConfiguration: runtimeConfiguration
         )
     }
 

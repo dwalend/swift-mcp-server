@@ -274,10 +274,310 @@ final class SwiftMCPServerTests: XCTestCase {
         """
             .write(to: sourceFile, atomically: true, encoding: .utf8)
 
-        let analyzer = ArchitectureAnalyzer(projectPath: workspace, logger: Logger(label: "test"))
+        let analyzer = ArchitectureAnalyzer(
+            projectPath: workspace,
+            logger: Logger(label: "test"),
+            options: AnalysisOptions(enableArchitectureDetection: true)
+        )
         let pattern = try await analyzer.detectArchitecturePattern()
 
         XCTAssertEqual(pattern, .mvvm)
+    }
+
+    func testArchitectureAnalyzerDetectsTCAFromSemanticEvidence() async throws {
+        let workspace = try makeTemporaryPackage(named: "SemanticTCA")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let sourceFile = workspace.appendingPathComponent("Sources/SemanticTCA/CounterFeature.swift")
+        try """
+        import SwiftUI
+        import ComposableArchitecture
+
+        @Reducer
+        struct CounterFeature {
+            @ObservableState
+            struct State: Equatable {
+                var count = 0
+            }
+
+            enum Action {
+                case incrementTapped
+            }
+
+            var body: some ReducerOf<Self> {
+                Reduce { state, action in
+                    switch action {
+                    case .incrementTapped:
+                        state.count += 1
+                        return .none
+                    }
+                }
+            }
+        }
+
+        struct CounterView: View {
+            let store: StoreOf<CounterFeature>
+
+            var body: some View {
+                Text("\\(store)")
+            }
+        }
+        """
+            .write(to: sourceFile, atomically: true, encoding: .utf8)
+
+        let analyzer = ArchitectureAnalyzer(
+            projectPath: workspace,
+            logger: Logger(label: "test"),
+            options: AnalysisOptions(enableArchitectureDetection: true)
+        )
+        let detection = try await analyzer.detectArchitecture()
+
+        XCTAssertEqual(detection.dominantPattern, .tca)
+        XCTAssertGreaterThan(detection.score(for: .tca), detection.score(for: .mvvm))
+    }
+
+    func testArchitectureAnalyzerDetectsVIPERFromSemanticEvidence() async throws {
+        let workspace = try makeTemporaryPackage(named: "SemanticVIPER")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let sourceFile = workspace.appendingPathComponent("Sources/SemanticVIPER/LoginModule.swift")
+        try """
+        import UIKit
+
+        protocol LoginView: AnyObject {
+            func render()
+        }
+
+        protocol LoginRouting {
+            func showHome()
+        }
+
+        protocol LoginInteractorProtocol {
+            func loadUser() -> LoginEntity
+        }
+
+        struct LoginEntity {
+            let name: String
+        }
+
+        final class LoginRepository {
+            func fetchUser() -> LoginEntity {
+                LoginEntity(name: "Blob")
+            }
+        }
+
+        final class LoginInteractor: LoginInteractorProtocol {
+            let repository: LoginRepository
+
+            init(repository: LoginRepository) {
+                self.repository = repository
+            }
+
+            func loadUser() -> LoginEntity {
+                repository.fetchUser()
+            }
+        }
+
+        final class LoginRouter: LoginRouting {
+            func showHome() {}
+        }
+
+        final class LoginPresenter {
+            weak var view: (any LoginView)?
+            let interactor: LoginInteractorProtocol
+            let router: LoginRouting
+
+            init(interactor: LoginInteractorProtocol, router: LoginRouting) {
+                self.interactor = interactor
+                self.router = router
+            }
+
+            func login() {
+                _ = interactor.loadUser()
+                view?.render()
+                router.showHome()
+            }
+        }
+
+        final class LoginViewController: UIViewController, LoginView {
+            let presenter: LoginPresenter
+
+            init(presenter: LoginPresenter) {
+                self.presenter = presenter
+                super.init(nibName: nil, bundle: nil)
+            }
+
+            required init?(coder: NSCoder) {
+                fatalError()
+            }
+
+            func render() {}
+        }
+        """
+            .write(to: sourceFile, atomically: true, encoding: .utf8)
+
+        let analyzer = ArchitectureAnalyzer(
+            projectPath: workspace,
+            logger: Logger(label: "test"),
+            options: AnalysisOptions(enableArchitectureDetection: true)
+        )
+        let detection = try await analyzer.detectArchitecture()
+
+        XCTAssertEqual(detection.dominantPattern, .viper)
+        XCTAssertGreaterThanOrEqual(detection.score(for: .viper), 7)
+    }
+
+    func testArchitectureAnalyzerDetectsCoordinatorFromSemanticEvidence() async throws {
+        let workspace = try makeTemporaryPackage(named: "SemanticCoordinator")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let sourceFile = workspace.appendingPathComponent("Sources/SemanticCoordinator/AppCoordinator.swift")
+        try """
+        import UIKit
+
+        protocol AppCoordinating {
+            func start()
+        }
+
+        final class LoginCoordinator {
+            let navigationController: UINavigationController
+
+            init(navigationController: UINavigationController) {
+                self.navigationController = navigationController
+            }
+
+            func coordinateToLogin() {
+                navigationController.pushViewController(UIViewController(), animated: true)
+            }
+        }
+
+        final class AppCoordinator: AppCoordinating {
+            let navigationController: UINavigationController
+            let childCoordinator: LoginCoordinator
+
+            init(navigationController: UINavigationController, childCoordinator: LoginCoordinator) {
+                self.navigationController = navigationController
+                self.childCoordinator = childCoordinator
+            }
+
+            func start() {
+                navigationController.setViewControllers([], animated: false)
+                childCoordinator.coordinateToLogin()
+            }
+        }
+        """
+            .write(to: sourceFile, atomically: true, encoding: .utf8)
+
+        let analyzer = ArchitectureAnalyzer(
+            projectPath: workspace,
+            logger: Logger(label: "test"),
+            options: AnalysisOptions(enableArchitectureDetection: true)
+        )
+        let detection = try await analyzer.detectArchitecture()
+
+        XCTAssertEqual(detection.dominantPattern, .coordinator)
+        XCTAssertGreaterThanOrEqual(detection.score(for: .coordinator), 5)
+    }
+
+    func testArchitecturePatternParsingAcceptsIdentifiersAndDisplayNames() {
+        XCTAssertEqual(ArchitecturePattern.parse("tca"), .tca)
+        XCTAssertEqual(ArchitecturePattern.parse("clean_architecture"), .cleanArchitecture)
+        XCTAssertEqual(ArchitecturePattern.parse("Clean Architecture"), .cleanArchitecture)
+        XCTAssertEqual(ArchitecturePattern.parse("Features-based"), .featuresBased)
+    }
+
+    func testArchitectureDetectionIsDisabledByDefault() async throws {
+        let workspace = try makeTemporaryPackage(named: "DisabledArchitecture")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        try writeFile(
+            at: "Sources/DisabledArchitecture/ContentView.swift",
+            relativeTo: workspace,
+            contents: """
+            import SwiftUI
+
+            struct ContentView: View {
+                @StateObject private var viewModel = CounterViewModel()
+
+                var body: some View {
+                    Text(viewModel.title)
+                }
+            }
+
+            final class CounterViewModel: ObservableObject {
+                @Published var title = "Hello"
+            }
+            """
+        )
+
+        let analyzer = ArchitectureAnalyzer(projectPath: workspace, logger: Logger(label: "test"))
+        let detection = try await analyzer.detectArchitecture()
+
+        XCTAssertFalse(detection.isEnabled)
+        XCTAssertEqual(detection.dominantPattern, .custom)
+    }
+
+    func testDetectArchitectureToolRequiresExplicitEnablement() async throws {
+        let workspace = try makeTemporaryPackage(named: "ArchitectureToolWorkspace")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        try writeFile(
+            at: "Sources/ArchitectureToolWorkspace/ContentView.swift",
+            relativeTo: workspace,
+            contents: """
+            import SwiftUI
+
+            struct ContentView: View {
+                @StateObject private var viewModel = CounterViewModel()
+
+                var body: some View {
+                    Text(viewModel.title)
+                }
+            }
+
+            final class CounterViewModel: ObservableObject {
+                @Published var title = "Hello"
+            }
+            """
+        )
+
+        let logger = Logger(label: "test")
+        let swiftLanguageServer = SwiftLanguageServer(logger: logger, workspaceRoot: workspace)
+        let handler = MCPProtocolHandler(swiftLanguageServer: swiftLanguageServer, logger: logger)
+
+        let disabledRequest = MCPRequest(
+            jsonrpc: "2.0",
+            id: .string("detect-disabled"),
+            method: "tools/call",
+            params: [
+                "name": "detect_architecture",
+                "arguments": [:]
+            ]
+        )
+
+        let disabledResponse = try await handler.handleRequest(disabledRequest)
+        let disabledText = try XCTUnwrap(
+            disabledResponse.result?.objectValue?["content"]?.arrayValue?.first?.objectValue?.string("text")
+        )
+        XCTAssertTrue(disabledText.contains("disabled"))
+
+        let enabledRequest = MCPRequest(
+            jsonrpc: "2.0",
+            id: .string("detect-enabled"),
+            method: "tools/call",
+            params: [
+                "name": "detect_architecture",
+                "arguments": [
+                    "enable_architecture_detection": true
+                ]
+            ]
+        )
+
+        let enabledResponse = try await handler.handleRequest(enabledRequest)
+        let enabledText = try XCTUnwrap(
+            enabledResponse.result?.objectValue?["content"]?.arrayValue?.first?.objectValue?.string("text")
+        )
+        XCTAssertTrue(enabledText.contains("MVVM"))
     }
 
     func testSymbolSearchReflectsImmediateFileChanges() async throws {
@@ -391,7 +691,11 @@ final class SwiftMCPServerTests: XCTestCase {
             """
         )
 
-        let analyzer = ProjectAnalyzer(projectPath: workspace, logger: Logger(label: "test"))
+        let analyzer = ProjectAnalyzer(
+            projectPath: workspace,
+            logger: Logger(label: "test"),
+            options: AnalysisOptions(enableArchitectureDetection: true)
+        )
         let analysis = try await analyzer.analyzeProject()
 
         XCTAssertEqual(analysis.projectType, .swiftPackage)

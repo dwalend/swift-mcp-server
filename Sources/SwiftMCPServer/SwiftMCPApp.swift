@@ -95,6 +95,8 @@ struct SwiftMCPServer: AsyncParsableCommand {
     
     @Option(name: .long, help: "PID file path for process management")
     var pidFile: String?
+
+    private var serverConfiguration = ServerConfiguration()
     
     // MARK: - Execution
     
@@ -263,7 +265,10 @@ struct SwiftMCPServer: AsyncParsableCommand {
             host: host,
             port: port,
             logger: logger,
-            workspaceRoot: workspaceURL
+            workspaceRoot: workspaceURL,
+            runtimeConfiguration: MCPRuntimeConfiguration(
+                analysis: serverConfiguration.analysis ?? AnalysisOptions()
+            )
         )
         
         // Setup graceful shutdown for HTTP server
@@ -279,7 +284,13 @@ struct SwiftMCPServer: AsyncParsableCommand {
     private func startStdioServer(logger: Logger, workspaceURL: URL?) async throws {
         logger.info("📡 Initializing STDIO transport for AI/editor MCP integration")
         
-        let stdinHandler = StdioTransport(logger: logger, workspaceRoot: workspaceURL)
+        let stdinHandler = StdioTransport(
+            logger: logger,
+            workspaceRoot: workspaceURL,
+            runtimeConfiguration: MCPRuntimeConfiguration(
+                analysis: serverConfiguration.analysis ?? AnalysisOptions()
+            )
+        )
         
         // Setup graceful shutdown for STDIO
         defer {
@@ -438,6 +449,7 @@ extension SwiftMCPServer {
         
         let configData = try Data(contentsOf: configURL)
         let serverConfig = try JSONDecoder().decode(ServerConfiguration.self, from: configData)
+        self.serverConfiguration = serverConfig
         
         // Override CLI arguments with config values
         if transport == .http {

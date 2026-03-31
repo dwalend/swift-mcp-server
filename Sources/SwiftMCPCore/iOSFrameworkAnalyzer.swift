@@ -8,15 +8,23 @@ public final class iOSFrameworkAnalysisEngine {
     private let semanticIndex: SemanticProjectIndex
     private let architectureAnalyzer: ArchitectureAnalyzer
     private let sdkCatalog: AppleSDKCatalog
+    private let options: AnalysisOptions
 
-    public init(projectPath: URL, logger: Logger, sdkCatalog: AppleSDKCatalog? = nil) {
+    public init(
+        projectPath: URL,
+        logger: Logger,
+        sdkCatalog: AppleSDKCatalog? = nil,
+        options: AnalysisOptions = AnalysisOptions()
+    ) {
         self.logger = logger
         self.projectPath = projectPath
+        self.options = options
         self.semanticIndex = SemanticProjectIndexCache.shared.index(for: projectPath, logger: logger)
         self.architectureAnalyzer = ArchitectureAnalyzer(
             projectPath: projectPath,
             logger: logger,
-            semanticIndex: semanticIndex
+            semanticIndex: semanticIndex,
+            options: options
         )
         self.sdkCatalog = sdkCatalog ?? AppleSDKCatalog(logger: logger)
     }
@@ -176,23 +184,20 @@ public final class iOSFrameworkAnalysisEngine {
     // MARK: - Architecture Pattern Analysis
 
     private func analyzeArchitecturePatterns(in snapshot: SemanticProjectSnapshot) async throws -> ArchitecturePatterns {
-        let dominantArchitecture = try await architectureAnalyzer.detectArchitecturePattern()
-        let observableNames = Set(snapshot.types.filter(isObservableType).map(\.name))
-        let mvvmScore = snapshot.types
-            .filter { Set($0.inheritedTypes).contains("View") || Set($0.inheritedTypes).contains("UIViewController") }
-            .reduce(into: 0) { total, type in
-                let references = Set(type.memberTypeNames).union(type.referencedNames)
-                if type.hasStateObjectWrapper || !references.intersection(observableNames).isEmpty {
-                    total += 1
-                }
-            }
+        let detection = architectureAnalyzer.detectArchitecture(in: snapshot)
 
         return ArchitecturePatterns(
-            mvvmScore: mvvmScore,
-            mvpScore: 0,
-            viperScore: 0,
-            coordinatorScore: 0,
-            dominantPattern: dominantArchitecture.rawValue
+            enabled: options.enableArchitectureDetection,
+            mvcScore: detection.score(for: .mvc),
+            mvvmScore: detection.score(for: .mvvm),
+            mvpScore: detection.score(for: .mvp),
+            viperScore: detection.score(for: .viper),
+            coordinatorScore: detection.score(for: .coordinator),
+            tcaScore: detection.score(for: .tca),
+            cleanArchitectureScore: detection.score(for: .cleanArchitecture),
+            featuresBasedScore: detection.score(for: .featuresBased),
+            modularScore: detection.score(for: .modular),
+            dominantPattern: detection.isEnabled ? detection.dominantPattern.rawValue : "Skipped"
         )
     }
 
@@ -476,10 +481,16 @@ public struct UIPatterns {
 }
 
 public struct ArchitecturePatterns {
+    public let enabled: Bool
+    public let mvcScore: Int
     public let mvvmScore: Int
     public let mvpScore: Int
     public let viperScore: Int
     public let coordinatorScore: Int
+    public let tcaScore: Int
+    public let cleanArchitectureScore: Int
+    public let featuresBasedScore: Int
+    public let modularScore: Int
     public let dominantPattern: String
 }
 

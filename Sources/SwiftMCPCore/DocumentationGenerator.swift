@@ -6,10 +6,12 @@ public class DocumentationGenerator {
     private let projectPath: URL
     private let logger: Logger
     private let fileManager = FileManager.default
+    private let semanticIndex: SemanticProjectIndex
     
     public init(projectPath: URL, logger: Logger) {
         self.projectPath = projectPath
         self.logger = logger
+        self.semanticIndex = SemanticProjectIndexCache.shared.index(for: projectPath, logger: logger)
     }
     
     // MARK: - Public API
@@ -17,9 +19,9 @@ public class DocumentationGenerator {
     public func generateProjectDocumentation() async throws -> DocumentationResult {
         logger.info("📚 Starting documentation generation for project")
         
-        let swiftFiles = try findSwiftFiles()
-        let projectStructure = try analyzeProjectStructure()
-        let apiDocumentation = try await generateAPIDocumentation(from: swiftFiles)
+        let snapshot = try await semanticIndex.snapshot()
+        let projectStructure = try analyzeProjectStructure(snapshot: snapshot)
+        let apiDocumentation = try generateAPIDocumentation(from: snapshot)
         let readme = generateReadmeContent(structure: projectStructure, apiDocs: apiDocumentation)
         
         // Save generated documentation
@@ -39,20 +41,7 @@ public class DocumentationGenerator {
     
     // MARK: - Private Methods
     
-    private func findSwiftFiles() throws -> [URL] {
-        var swiftFiles: [URL] = []
-        
-        let enumerator = fileManager.enumerator(at: projectPath, includingPropertiesForKeys: nil)
-        while let file = enumerator?.nextObject() as? URL {
-            if file.pathExtension == "swift" && !file.path.contains(".build") {
-                swiftFiles.append(file)
-            }
-        }
-        
-        return swiftFiles
-    }
-    
-    private func analyzeProjectStructure() throws -> DocProjectStructure {
+    private func analyzeProjectStructure(snapshot: SemanticProjectSnapshot) throws -> DocProjectStructure {
         let packageSwift = projectPath.appendingPathComponent("Package.swift")
         let hasPackageSwift = fileManager.fileExists(atPath: packageSwift.path)
         
@@ -60,13 +49,12 @@ public class DocumentationGenerator {
         let contents = try fileManager.contentsOfDirectory(at: projectPath, includingPropertiesForKeys: nil)
         let xcodeProject = contents.first { $0.pathExtension == "xcodeproj" || $0.pathExtension == "xcworkspace" }
         
-        let swiftFiles = try findSwiftFiles()
         let mainDirectories = try getMainDirectories()
         
         return DocProjectStructure(
             name: projectPath.lastPathComponent,
             type: determineProjectType(hasPackageSwift: hasPackageSwift, xcodeProject: xcodeProject),
-            swiftFileCount: swiftFiles.count,
+            swiftFileCount: snapshot.files.count,
             hasPackageSwift: hasPackageSwift,
             hasXcodeProject: xcodeProject != nil,
             mainDirectories: mainDirectories
@@ -99,64 +87,34 @@ public class DocumentationGenerator {
         return directories.sorted()
     }
     
-    private func generateAPIDocumentation(from files: [URL]) async throws -> [APIDocumentationItem] {
-        var apiItems: [APIDocumentationItem] = []
-        
-        for file in files {
-            let content = try String(contentsOf: file, encoding: .utf8)
-            let lines = content.components(separatedBy: .newlines)
-            
-            for (index, line) in lines.enumerated() {
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                
-                // Simple parsing for classes, structs, functions
-                if let classInfo = parseSimple(line: trimmed, keyword: "class") {
-                    apiItems.append(APIDocumentationItem(
-                        name: classInfo.name,
-                        type: .classType,
-                        accessLevel: classInfo.access,
-                        filePath: file.path,
-                        line: index + 1,
-                        documentation: extractDocumentation(from: lines, at: index)
-                    ))
-                } else if let structInfo = parseSimple(line: trimmed, keyword: "struct") {
-                    apiItems.append(APIDocumentationItem(
-                        name: structInfo.name,
-                        type: .structType,
-                        accessLevel: structInfo.access,
-                        filePath: file.path,
-                        line: index + 1,
-                        documentation: extractDocumentation(from: lines, at: index)
-                    ))
-                } else if let funcInfo = parseSimple(line: trimmed, keyword: "func") {
-                    apiItems.append(APIDocumentationItem(
-                        name: funcInfo.name,
-                        type: .function,
-                        accessLevel: funcInfo.access,
-                        filePath: file.path,
-                        line: index + 1,
-                        documentation: extractDocumentation(from: lines, at: index)
-                    ))
+    private func generateAPIDocumentation(from snapshot: SemanticProjectSnapshot) throws -> [APIDocumentationItem] {
+        let fileContents = try snapshot.files.reduce(into: [URL: [String]]()) { result, file in
+            let content = try String(contentsOf: file.fileURL, encoding: .utf8)
+            result[file.fileURL] = content.components(separatedBy: .newlines)
+        }
+
+        return snapshot.declarations
+            .compactMap { declaration -> APIDocumentationItem? in
+                guard let apiType = apiType(for: declaration.kind),
+                      let lines = fileContents[declaration.fileURL] else {
+                    return nil
                 }
+
+                return APIDocumentationItem(
+                    name: declaration.name,
+                    type: apiType,
+                    accessLevel: accessLevel(for: declaration.accessLevel),
+                    filePath: declaration.fileURL.path,
+                    line: declaration.line,
+                    documentation: extractDocumentation(from: lines, at: declaration.line - 1)
+                )
             }
-        }
-        
-        return apiItems
-    }
-    
-    private func parseSimple(line: String, keyword: String) -> (name: String, access: AccessLevel)? {
-        if line.contains("\(keyword) ") {
-            let components = line.components(separatedBy: " ")
-            if let keywordIndex = components.firstIndex(of: keyword),
-               keywordIndex + 1 < components.count {
-                let nameWithExtras = components[keywordIndex + 1]
-                let name = String(nameWithExtras.prefix(while: { $0.isLetter || $0.isNumber || $0 == "_" }))
-                let access: AccessLevel = line.contains("public") ? .public : 
-                                        line.contains("private") ? .private : .internal
-                return (name: name, access: access)
+            .sorted {
+                if $0.filePath == $1.filePath {
+                    return $0.line < $1.line
+                }
+                return $0.filePath < $1.filePath
             }
-        }
-        return nil
     }
     
     private func extractDocumentation(from lines: [String], at index: Int) -> String? {
@@ -177,6 +135,34 @@ public class DocumentationGenerator {
         }
         
         return docLines.isEmpty ? nil : docLines.joined(separator: "\n")
+    }
+
+    private func apiType(for kind: String) -> APIType? {
+        switch kind {
+        case "class":
+            return .classType
+        case "struct":
+            return .structType
+        case "protocol":
+            return .protocolType
+        case "function":
+            return .function
+        case "property":
+            return .variable
+        default:
+            return nil
+        }
+    }
+
+    private func accessLevel(for value: String) -> AccessLevel {
+        switch value {
+        case "public":
+            return .public
+        case "private", "fileprivate":
+            return .private
+        default:
+            return .internal
+        }
     }
     
     private func generateReadmeContent(structure: DocProjectStructure, apiDocs: [APIDocumentationItem]) -> String {
@@ -199,7 +185,9 @@ A Swift project with \(structure.swiftFileCount) Swift files.
         // Group API items by type
         let classes = apiDocs.filter { $0.type == .classType }
         let structs = apiDocs.filter { $0.type == .structType }
+        let protocols = apiDocs.filter { $0.type == .protocolType }
         let functions = apiDocs.filter { $0.type == .function }
+        let variables = apiDocs.filter { $0.type == .variable }
         
         if !classes.isEmpty {
             content += "### Classes\n\n"
@@ -222,10 +210,32 @@ A Swift project with \(structure.swiftFileCount) Swift files.
             }
             content += "\n"
         }
-        
+
+        if !protocols.isEmpty {
+            content += "### Protocols\n\n"
+            for item in protocols {
+                content += "- **\(item.name)** (\(item.accessLevel.rawValue))\n"
+                if let doc = item.documentation {
+                    content += "  \(doc)\n"
+                }
+            }
+            content += "\n"
+        }
+
         if !functions.isEmpty {
             content += "### Functions\n\n"
             for item in functions.prefix(10) { // Limit to first 10 functions
+                content += "- **\(item.name)** (\(item.accessLevel.rawValue))\n"
+                if let doc = item.documentation {
+                    content += "  \(doc)\n"
+                }
+            }
+            content += "\n"
+        }
+
+        if !variables.isEmpty {
+            content += "### Variables\n\n"
+            for item in variables.prefix(10) {
                 content += "- **\(item.name)** (\(item.accessLevel.rawValue))\n"
                 if let doc = item.documentation {
                     content += "  \(doc)\n"

@@ -41,6 +41,17 @@ swift-mcp-server --transport stdio --workspace /path/to/project
 ```
 Use this command in any local AI client that can spawn MCP servers over `stdio`.
 
+### Architecture Detection
+Architecture detection is disabled by default. To enable it globally, add this to a server config file:
+```json
+{
+  "analysis": {
+    "enableArchitectureDetection": true
+  }
+}
+```
+You can also enable it per MCP request with `enable_architecture_detection: true`.
+
 ### HTTP API Server
 ```bash
 swift-mcp-server --config http-config.json --transport http --port 9000

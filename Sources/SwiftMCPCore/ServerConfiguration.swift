@@ -180,6 +180,7 @@ public struct ServerConfiguration: Codable {
     public let name: String
     public let version: String
     public let description: String
+    public let analysis: AnalysisOptions?
     public let mcpServer: MCPServerConfig
     public let serenaIntegration: SerenaIntegration
     public let requirements: Requirements
@@ -199,6 +200,7 @@ public struct ServerConfiguration: Codable {
     public init(name: String = "swift-mcp-server",
                version: String = "1.0.0",
                description: String = "Professional Swift MCP Server with dual transport support",
+               analysis: AnalysisOptions? = nil,
                mcpServer: MCPServerConfig = MCPServerConfig(),
                serenaIntegration: SerenaIntegration = SerenaIntegration(),
                requirements: Requirements = Requirements(),
@@ -206,6 +208,7 @@ public struct ServerConfiguration: Codable {
         self.name = name
         self.version = version
         self.description = description
+        self.analysis = analysis
         self.mcpServer = mcpServer
         self.serenaIntegration = serenaIntegration
         self.requirements = requirements

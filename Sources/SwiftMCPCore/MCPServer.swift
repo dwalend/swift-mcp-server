@@ -15,7 +15,13 @@ public final class MCPServer: @unchecked Sendable {
     private let mcpProtocolHandler: MCPProtocolHandler
     private let modernConcurrency: ModernConcurrencyIntegration
     
-    public init(host: String, port: Int, logger: Logger, workspaceRoot: URL? = nil) {
+    public init(
+        host: String,
+        port: Int,
+        logger: Logger,
+        workspaceRoot: URL? = nil,
+        runtimeConfiguration: MCPRuntimeConfiguration = MCPRuntimeConfiguration()
+    ) {
         self.host = host
         self.port = port
         self.logger = logger
@@ -27,7 +33,8 @@ public final class MCPServer: @unchecked Sendable {
         self.swiftLanguageServer = SwiftLanguageServer(logger: logger, workspaceRoot: workspaceRoot)
         self.mcpProtocolHandler = MCPProtocolHandler(
             swiftLanguageServer: swiftLanguageServer,
-            logger: logger
+            logger: logger,
+            runtimeConfiguration: runtimeConfiguration
         )
     }
     

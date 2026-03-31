@@ -2,6 +2,9 @@
   "name": "swift-mcp-server",
   "version": "1.0.0",
   "description": "Enterprise Swift MCP Server with dual transport support",
+  "analysis": {
+    "enableArchitectureDetection": true
+  },
   "mcpServer": {
     "transport": {
       "type": "http",

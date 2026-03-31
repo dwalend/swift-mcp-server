@@ -10,18 +10,38 @@ public final class MCPProtocolHandler {
     private let documentationGenerator: DocumentationGenerator
     private let iOSFrameworkAnalyzer: iOSFrameworkAnalysisEngine
     private let templateGenerator: TemplateGenerator
+    private let runtimeConfiguration: MCPRuntimeConfiguration
     private let logger: Logger
 
-    public init(swiftLanguageServer: SwiftLanguageServer, logger: Logger) {
+    public init(
+        swiftLanguageServer: SwiftLanguageServer,
+        logger: Logger,
+        runtimeConfiguration: MCPRuntimeConfiguration = MCPRuntimeConfiguration()
+    ) {
         self.swiftLanguageServer = swiftLanguageServer
         self.logger = logger
+        self.runtimeConfiguration = runtimeConfiguration
 
-        self.projectAnalyzer = ProjectAnalyzer(projectPath: swiftLanguageServer.workspaceURL, logger: logger)
-        self.architectureAnalyzer = ArchitectureAnalyzer(projectPath: swiftLanguageServer.workspaceURL, logger: logger)
+        let analysisOptions = runtimeConfiguration.analysis
+
+        self.projectAnalyzer = ProjectAnalyzer(
+            projectPath: swiftLanguageServer.workspaceURL,
+            logger: logger,
+            options: analysisOptions
+        )
+        self.architectureAnalyzer = ArchitectureAnalyzer(
+            projectPath: swiftLanguageServer.workspaceURL,
+            logger: logger,
+            options: analysisOptions
+        )
         self.symbolSearchEngine = SymbolSearchEngine(projectPath: swiftLanguageServer.workspaceURL, logger: logger)
         self.projectMemory = IntelligentProjectMemory(projectPath: swiftLanguageServer.workspaceURL, logger: logger)
         self.documentationGenerator = DocumentationGenerator(projectPath: swiftLanguageServer.workspaceURL, logger: logger)
-        self.iOSFrameworkAnalyzer = iOSFrameworkAnalysisEngine(projectPath: swiftLanguageServer.workspaceURL, logger: logger)
+        self.iOSFrameworkAnalyzer = iOSFrameworkAnalysisEngine(
+            projectPath: swiftLanguageServer.workspaceURL,
+            logger: logger,
+            options: analysisOptions
+        )
         self.templateGenerator = TemplateGenerator(projectPath: swiftLanguageServer.workspaceURL, logger: logger)
     }
 
@@ -182,17 +202,17 @@ public final class MCPProtocolHandler {
             ),
             Tool(
                 name: "analyze_project",
-                description: "Perform comprehensive project analysis including architecture detection",
-                inputSchema: projectPathInputSchema()
+                description: "Perform comprehensive project analysis. Architecture detection is skipped unless enabled in config or per request.",
+                inputSchema: projectPathInputSchema(includeArchitectureDetectionToggle: true)
             ),
             Tool(
                 name: "detect_architecture",
-                description: "Detect the architecture pattern used in the project",
-                inputSchema: projectPathInputSchema()
+                description: "Detect the architecture pattern used in the project when architecture detection is enabled",
+                inputSchema: projectPathInputSchema(includeArchitectureDetectionToggle: true)
             ),
             Tool(
                 name: "analyze_symbol_usage",
-                description: "Analyze how a symbol is used throughout the project",
+                description: "Analyze how a symbol is used throughout the project using semantic reference categories",
                 inputSchema: [
                     "type": "object",
                     "properties": [
@@ -211,7 +231,7 @@ public final class MCPProtocolHandler {
             Tool(
                 name: "create_project_memory",
                 description: "Create comprehensive project documentation and memory",
-                inputSchema: projectPathInputSchema()
+                inputSchema: projectPathInputSchema(includeArchitectureDetectionToggle: true)
             ),
             Tool(
                 name: "generate_migration_plan",
@@ -221,11 +241,15 @@ public final class MCPProtocolHandler {
                     "properties": [
                         "target_architecture": [
                             "type": "string",
-                            "description": "Target architecture pattern (mvvm, features_based, viper, clean_architecture)"
+                            "description": "Target architecture pattern (mvc, mvvm, mvp, viper, coordinator, tca, features_based, clean_architecture, modular)"
                         ],
                         "project_path": [
                             "type": "string",
                             "description": "Optional path to the project. Defaults to the current workspace."
+                        ],
+                        "enable_architecture_detection": [
+                            "type": "boolean",
+                            "description": "Optional override. Architecture detection is disabled by default unless enabled in config or per request."
                         ]
                     ],
                     "required": ["target_architecture"]
@@ -262,7 +286,7 @@ public final class MCPProtocolHandler {
             Tool(
                 name: "analyze_ios_frameworks",
                 description: "Analyze iOS framework usage and detect UI patterns",
-                inputSchema: projectPathInputSchema()
+                inputSchema: projectPathInputSchema(includeArchitectureDetectionToggle: true)
             ),
             Tool(
                 name: "generate_template",
@@ -480,12 +504,15 @@ public final class MCPProtocolHandler {
 
     private func handleAnalyzeProject(_ arguments: JSONObject) async throws -> String {
         let projectURL = resolveProjectURL(from: arguments)
-        let analyzer = projectAnalyzer(for: projectURL)
+        let analyzer = projectAnalyzer(for: projectURL, arguments: arguments)
         let analysis = try await analyzer.analyzeProject()
+        let architectureDescription = analyzer.architectureDetectionEnabled
+            ? analysis.architecturePattern.rawValue
+            : "Skipped (disabled by configuration)"
 
         return """
         Project Analysis for: \(projectURL.path)
-        Architecture: \(analysis.architecturePattern.rawValue)
+        Architecture: \(architectureDescription)
         Modules: \(analysis.structure.modules.count)
         Features: \(analysis.structure.features.count)
         Metrics: \(analysis.metrics.totalFiles) files, \(analysis.metrics.totalLines) lines
@@ -493,7 +520,10 @@ public final class MCPProtocolHandler {
     }
 
     private func handleDetectArchitecture(_ arguments: JSONObject) async throws -> String {
-        let analyzer = architectureAnalyzer(for: resolveProjectURL(from: arguments))
+        let analyzer = architectureAnalyzer(for: resolveProjectURL(from: arguments), arguments: arguments)
+        guard analyzer.architectureDetectionEnabled else {
+            return "Architecture detection disabled by configuration"
+        }
         let pattern = try await analyzer.detectArchitecturePattern()
 
         return pattern.rawValue
@@ -507,23 +537,31 @@ public final class MCPProtocolHandler {
         let projectURL = resolveProjectURL(from: arguments)
         let symbolEngine = symbolSearchEngine(for: projectURL)
         let usage = try await symbolEngine.analyzeSymbolUsage(symbolName: symbolName)
+        let usageCategories = usage.usagePatterns
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ", ")
 
         return """
         Symbol Usage Analysis for: \(symbolName)
         Total occurrences: \(usage.totalReferences)
         Files containing symbol: \(usage.uniqueFiles)
-        Usage patterns: \(usage.usagePatterns.keys.joined(separator: ", "))
+        Semantically resolved: \(usage.resolvedSemantically ? "Yes" : "No")
+        Usage categories: \(usageCategories.isEmpty ? "None" : usageCategories)
         """
     }
 
     private func handleCreateProjectMemory(_ arguments: JSONObject) async throws -> String {
-        let analyzer = projectAnalyzer(for: resolveProjectURL(from: arguments))
+        let analyzer = projectAnalyzer(for: resolveProjectURL(from: arguments), arguments: arguments)
         let memory = try await analyzer.createProjectMemory()
+        let architectureDescription = analyzer.architectureDetectionEnabled
+            ? memory.analysis.architecturePattern.rawValue
+            : "Skipped (disabled by configuration)"
 
         return """
         Project Memory Created:
         Project: \(memory.analysis.projectName)
-        Architecture: \(memory.analysis.architecturePattern.rawValue)
+        Architecture: \(architectureDescription)
         Key Symbols: \(memory.keySymbols.count) symbols captured
         Code Patterns: \(memory.codePatterns.count) patterns identified
         Last Updated: \(memory.lastUpdated)
@@ -535,11 +573,11 @@ public final class MCPProtocolHandler {
             throw MCPError.invalidParams
         }
 
-        guard let targetPattern = ArchitecturePattern(rawValue: targetArchitecture) else {
+        guard let targetPattern = ArchitecturePattern.parse(targetArchitecture) else {
             throw MCPError.invalidParams
         }
 
-        let analyzer = projectAnalyzer(for: resolveProjectURL(from: arguments))
+        let analyzer = projectAnalyzer(for: resolveProjectURL(from: arguments), arguments: arguments)
         let plan = try await analyzer.generateMigrationPlan(to: targetPattern)
 
         return """
@@ -667,7 +705,7 @@ public final class MCPProtocolHandler {
     }
 
     private func handleAnalyzeiOSFrameworks(_ arguments: JSONObject) async throws -> String {
-        let analyzer = iOSFrameworkAnalyzer(for: resolveProjectURL(from: arguments))
+        let analyzer = iOSFrameworkAnalyzer(for: resolveProjectURL(from: arguments), arguments: arguments)
         let result = try await analyzer.analyzeIOSPatterns()
 
         return """
@@ -697,10 +735,16 @@ public final class MCPProtocolHandler {
         • Primary UI: \(result.uiPatterns.primaryUIFramework)
 
         🏗️ Architecture:
+        • Enabled: \(result.architecturePatterns.enabled ? "Yes" : "No")
+        • MVC Score: \(result.architecturePatterns.mvcScore)
         • MVVM Score: \(result.architecturePatterns.mvvmScore)
         • MVP Score: \(result.architecturePatterns.mvpScore)
         • VIPER Score: \(result.architecturePatterns.viperScore)
         • Coordinator Score: \(result.architecturePatterns.coordinatorScore)
+        • TCA Score: \(result.architecturePatterns.tcaScore)
+        • Clean Architecture Score: \(result.architecturePatterns.cleanArchitectureScore)
+        • Features-based Score: \(result.architecturePatterns.featuresBasedScore)
+        • Modular Score: \(result.architecturePatterns.modularScore)
         • Dominant pattern: \(result.architecturePatterns.dominantPattern)
 
         ⚡ Modern Features:
@@ -774,20 +818,32 @@ public final class MCPProtocolHandler {
         return swiftLanguageServer.workspaceURL
     }
 
-    private func projectAnalyzer(for projectURL: URL) -> ProjectAnalyzer {
-        isCurrentWorkspace(projectURL) ? projectAnalyzer : ProjectAnalyzer(projectPath: projectURL, logger: logger)
+    private func projectAnalyzer(for projectURL: URL, arguments: JSONObject? = nil) -> ProjectAnalyzer {
+        let options = analysisOptions(from: arguments)
+        if isCurrentWorkspace(projectURL), options == runtimeConfiguration.analysis {
+            return projectAnalyzer
+        }
+        return ProjectAnalyzer(projectPath: projectURL, logger: logger, options: options)
     }
 
-    private func architectureAnalyzer(for projectURL: URL) -> ArchitectureAnalyzer {
-        isCurrentWorkspace(projectURL) ? architectureAnalyzer : ArchitectureAnalyzer(projectPath: projectURL, logger: logger)
+    private func architectureAnalyzer(for projectURL: URL, arguments: JSONObject? = nil) -> ArchitectureAnalyzer {
+        let options = analysisOptions(from: arguments)
+        if isCurrentWorkspace(projectURL), options == runtimeConfiguration.analysis {
+            return architectureAnalyzer
+        }
+        return ArchitectureAnalyzer(projectPath: projectURL, logger: logger, options: options)
     }
 
     private func symbolSearchEngine(for projectURL: URL) -> SymbolSearchEngine {
         isCurrentWorkspace(projectURL) ? symbolSearchEngine : SymbolSearchEngine(projectPath: projectURL, logger: logger)
     }
 
-    private func iOSFrameworkAnalyzer(for projectURL: URL) -> iOSFrameworkAnalysisEngine {
-        isCurrentWorkspace(projectURL) ? iOSFrameworkAnalyzer : iOSFrameworkAnalysisEngine(projectPath: projectURL, logger: logger)
+    private func iOSFrameworkAnalyzer(for projectURL: URL, arguments: JSONObject? = nil) -> iOSFrameworkAnalysisEngine {
+        let options = analysisOptions(from: arguments)
+        if isCurrentWorkspace(projectURL), options == runtimeConfiguration.analysis {
+            return iOSFrameworkAnalyzer
+        }
+        return iOSFrameworkAnalysisEngine(projectPath: projectURL, logger: logger, options: options)
     }
 
     private func isCurrentWorkspace(_ projectURL: URL) -> Bool {
@@ -795,15 +851,31 @@ public final class MCPProtocolHandler {
             swiftLanguageServer.workspaceURL.standardizedFileURL.resolvingSymlinksInPath()
     }
 
-    private func projectPathInputSchema() -> JSONObject {
-        [
+    private func analysisOptions(from arguments: JSONObject?) -> AnalysisOptions {
+        AnalysisOptions(
+            enableArchitectureDetection: arguments?.bool("enable_architecture_detection") ??
+                runtimeConfiguration.analysis.enableArchitectureDetection
+        )
+    }
+
+    private func projectPathInputSchema(includeArchitectureDetectionToggle: Bool = false) -> JSONObject {
+        var properties: JSONObject = [
+            "project_path": [
+                "type": "string",
+                "description": "Optional path to the project. Defaults to the current workspace."
+            ]
+        ]
+
+        if includeArchitectureDetectionToggle {
+            properties["enable_architecture_detection"] = [
+                "type": "boolean",
+                "description": "Optional override. Architecture detection is disabled by default unless enabled in config or per request."
+            ]
+        }
+
+        return [
             "type": "object",
-            "properties": [
-                "project_path": [
-                    "type": "string",
-                    "description": "Optional path to the project. Defaults to the current workspace."
-                ]
-            ],
+            "properties": .object(properties),
             "required": []
         ]
     }

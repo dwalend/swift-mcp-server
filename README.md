@@ -19,8 +19,9 @@ What works today:
 What this project does not claim:
 - It is not a whole-program compiler analysis framework
 - It does not guarantee that every project can be classified into a named architecture
-- It does not infer patterns like VIPER or TCA from file names anymore
+- It does not infer patterns from file names or folder names anymore
 
+Architecture detection is disabled by default. Enable it in server config or per MCP request if you want named-pattern detection.
 If semantic evidence is weak, `detect_architecture` returns `Custom` rather than guessing.
 
 ## Requirements
@@ -112,6 +113,10 @@ Syntax/package-analysis tools:
 - official documentation links for imported Apple modules
 - richer feature-level analysis for `FoundationModels` and `ImagePlayground`
 
+Project-level architecture detection is opt-in:
+- config: set `"analysis": { "enableArchitectureDetection": true }`
+- per request: pass `"enable_architecture_detection": true` to `analyze_project`, `detect_architecture`, `create_project_memory`, `generate_migration_plan`, or `analyze_ios_frameworks`
+
 State/cache helpers:
 - `intelligent_project_memory`
 
@@ -137,7 +142,11 @@ It also means some results are intentionally conservative:
 ## Architecture Detection
 
 Current architecture detection is evidence-driven:
+- `TCA` when the workspace shows `ComposableArchitecture` reducers, nested `State` and `Action`, and store-backed views
 - `MVVM` when views depend on observable state types
+- `MVP` when passive views depend on presenter types and presenters own presentation flow without observable state models
+- `VIPER` when view, presenter, interactor, and router roles are all present with semantic wiring between them
+- `Coordinator` when navigation ownership is centralized in coordinator types with explicit routing/navigation APIs
 - `MVC` when controllers depend directly on model/domain types without an observable layer
 - `Clean Architecture` when presentation depends on protocol abstractions and data adapters implement those abstractions across module boundaries
 - `Features-based` when executable targets depend on multiple internal feature targets
@@ -157,7 +166,7 @@ swift test
 Current test coverage includes:
 - JSON-RPC/MCP request and response shape
 - SourceKit-LSP formatting, diagnostics, hover, definitions, and references
-- MVVM detection from semantic evidence
+- semantic architecture detection for MVVM, TCA, VIPER, and Coordinator
 - `Package.swift` parsing for target and dependency analysis
 
 ## Project Layout

@@ -7,6 +7,7 @@ public final class ProjectAnalyzer {
     private let logger: Logger
     private let architectureAnalyzer: ArchitectureAnalyzer
     private let semanticIndex: SemanticProjectIndex
+    private let options: AnalysisOptions
 
     private let uiBaseTypes: Set<String> = [
         "App",
@@ -35,15 +36,21 @@ public final class ProjectAnalyzer {
         "URLSession"
     ]
 
-    public init(projectPath: URL, logger: Logger) {
+    public init(projectPath: URL, logger: Logger, options: AnalysisOptions = AnalysisOptions()) {
         self.projectPath = projectPath
         self.logger = logger
+        self.options = options
         self.semanticIndex = SemanticProjectIndexCache.shared.index(for: projectPath, logger: logger)
         self.architectureAnalyzer = ArchitectureAnalyzer(
             projectPath: projectPath,
             logger: logger,
-            semanticIndex: self.semanticIndex
+            semanticIndex: self.semanticIndex,
+            options: options
         )
+    }
+
+    public var architectureDetectionEnabled: Bool {
+        options.enableArchitectureDetection
     }
 
     /// Perform comprehensive project analysis.
@@ -51,17 +58,23 @@ public final class ProjectAnalyzer {
         logger.info("🔍 Starting comprehensive project analysis for \(projectPath.lastPathComponent)")
 
         async let projectType = determineProjectType()
-        async let architecturePattern = architectureAnalyzer.detectArchitecturePattern()
         async let projectStructure = architectureAnalyzer.extractModulesAndFeatures()
         async let layerAnalysis = architectureAnalyzer.analyzeLayerSeparation()
         async let dependencies = analyzeDependencies()
         async let codeMetrics = calculateCodeMetrics()
         async let testCoverage = analyzeTestStructure()
 
+        let architecturePattern: ArchitecturePattern
+        if options.enableArchitectureDetection {
+            architecturePattern = try await architectureAnalyzer.detectArchitecturePattern()
+        } else {
+            architecturePattern = .custom
+        }
+
         let result = ProjectAnalysisResult(
             projectName: projectPath.lastPathComponent,
             projectType: try await projectType,
-            architecturePattern: try await architecturePattern,
+            architecturePattern: architecturePattern,
             structure: try await projectStructure,
             layers: try await layerAnalysis,
             dependencies: try await dependencies,
@@ -385,6 +398,25 @@ public final class ProjectAnalyzer {
                 MigrationStep(title: "Introduce observable models", description: "Bind controllers or views to observable state holders"),
                 MigrationStep(title: "Reduce controller responsibilities", description: "Keep controllers focused on lifecycle and rendering")
             ]
+        case (_, .tca):
+            return [
+                MigrationStep(title: "Define feature reducers", description: "Create reducer-backed feature boundaries with nested State and Action models"),
+                MigrationStep(title: "Move side effects behind dependencies", description: "Replace ad-hoc service access with explicit dependency injection"),
+                MigrationStep(title: "Bind views to stores", description: "Route UI state through Store or StoreOf rather than direct mutable models"),
+                MigrationStep(title: "Add reducer tests", description: "Use deterministic state transition tests before cutting over feature flows")
+            ]
+        case (_, .coordinator):
+            return [
+                MigrationStep(title: "Extract navigation ownership", description: "Move navigation flow out of views or controllers into coordinator types"),
+                MigrationStep(title: "Define feature entry points", description: "Give each flow a single start boundary and explicit child routing"),
+                MigrationStep(title: "Keep screens passive", description: "Let screens request routes instead of constructing downstream screens directly")
+            ]
+        case (_, .mvp):
+            return [
+                MigrationStep(title: "Introduce presenters", description: "Move presentation decisions into presenter types or protocols"),
+                MigrationStep(title: "Keep views passive", description: "Reduce UI layer responsibilities to rendering and forwarding user input"),
+                MigrationStep(title: "Push domain access behind presenters", description: "Let presenters coordinate data dependencies and mapping")
+            ]
         case (_, .featuresBased):
             return [
                 MigrationStep(title: "Split internal targets", description: "Create feature-scoped modules with explicit dependencies"),
@@ -443,6 +475,22 @@ public final class ProjectAnalyzer {
             return [
                 "Highly explicit boundaries",
                 "Rigid separation of responsibilities"
+            ]
+        case .coordinator:
+            return [
+                "Centralized navigation ownership",
+                "Lower coupling between screens"
+            ]
+        case .mvp:
+            return [
+                "Passive views with clearer presentation boundaries",
+                "Improved presenter testability"
+            ]
+        case .tca:
+            return [
+                "Deterministic state transitions",
+                "Testable side effects and feature composition",
+                "Explicit dependency management"
             ]
         default:
             return [

@@ -57,6 +57,7 @@ public class SymbolSearchEngine {
 
         let snapshot = try await semanticIndex.snapshot()
         let allowedKinds = Set(normalizedKinds(for: symbolType))
+        _ = includeComments
 
         return snapshot.references
             .filter { $0.name == symbolName }
@@ -118,8 +119,7 @@ public class SymbolSearchEngine {
         var fileDistribution: [String: Int] = [:]
 
         for reference in references {
-            let pattern = reference.context.trimmingCharacters(in: .whitespacesAndNewlines)
-            usagePatterns[pattern, default: 0] += 1
+            usagePatterns[usageCategory(for: reference.usageType), default: 0] += 1
             fileDistribution[reference.file, default: 0] += 1
         }
 
@@ -129,7 +129,8 @@ public class SymbolSearchEngine {
             uniqueFiles: fileDistribution.count,
             usagePatterns: usagePatterns,
             fileDistribution: fileDistribution,
-            mostUsedIn: fileDistribution.max(by: { $0.value < $1.value })?.key
+            mostUsedIn: fileDistribution.max(by: { $0.value < $1.value })?.key,
+            resolvedSemantically: true
         )
     }
 
@@ -164,6 +165,31 @@ public class SymbolSearchEngine {
 
     private func isTypeLike(kind: String) -> Bool {
         ["class", "struct", "enum", "protocol", "actor"].contains(kind)
+    }
+
+    private func usageCategory(for usageType: String) -> String {
+        switch usageType {
+        case SemanticReferenceKind.declaration.rawValue:
+            return "Declarations"
+        case SemanticReferenceKind.inheritance.rawValue:
+            return "Inheritance"
+        case SemanticReferenceKind.typeReference.rawValue:
+            return "Type references"
+        case SemanticReferenceKind.valueReference.rawValue:
+            return "Value references"
+        case SemanticReferenceKind.functionCall.rawValue:
+            return "Function calls"
+        case SemanticReferenceKind.memberAccess.rawValue:
+            return "Member access"
+        case SemanticReferenceKind.attribute.rawValue:
+            return "Attributes"
+        case SemanticReferenceKind.importModule.rawValue:
+            return "Imports"
+        case SemanticReferenceKind.languageFeature.rawValue:
+            return "Language features"
+        default:
+            return usageType
+        }
     }
 
     private func makeSymbolInfo(from declaration: SemanticDeclaration) -> SymbolInfo {
@@ -234,13 +260,23 @@ public struct SymbolUsageAnalysis {
     public let usagePatterns: [String: Int]
     public let fileDistribution: [String: Int]
     public let mostUsedIn: String?
+    public let resolvedSemantically: Bool
     
-    public init(symbolName: String, totalReferences: Int, uniqueFiles: Int, usagePatterns: [String: Int], fileDistribution: [String: Int], mostUsedIn: String?) {
+    public init(
+        symbolName: String,
+        totalReferences: Int,
+        uniqueFiles: Int,
+        usagePatterns: [String: Int],
+        fileDistribution: [String: Int],
+        mostUsedIn: String?,
+        resolvedSemantically: Bool
+    ) {
         self.symbolName = symbolName
         self.totalReferences = totalReferences
         self.uniqueFiles = uniqueFiles
         self.usagePatterns = usagePatterns
         self.fileDistribution = fileDistribution
         self.mostUsedIn = mostUsedIn
+        self.resolvedSemantically = resolvedSemantically
     }
 }

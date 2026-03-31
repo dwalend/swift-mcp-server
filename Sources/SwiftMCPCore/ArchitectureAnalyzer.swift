@@ -6,6 +6,7 @@ public final class ArchitectureAnalyzer {
     private let projectPath: URL
     private let logger: Logger
     private let semanticIndex: SemanticProjectIndex
+    private let options: AnalysisOptions
 
     private let uiFrameworkImports: Set<String> = ["AppKit", "SwiftUI", "UIKit", "WatchKit"]
     private let controllerBaseTypes: Set<String> = ["NSViewController", "UIViewController", "WKInterfaceController"]
@@ -32,43 +33,77 @@ public final class ArchitectureAnalyzer {
         self.init(
             projectPath: projectPath,
             logger: logger,
-            semanticIndex: SemanticProjectIndexCache.shared.index(for: projectPath, logger: logger)
+            semanticIndex: SemanticProjectIndexCache.shared.index(for: projectPath, logger: logger),
+            options: AnalysisOptions()
         )
     }
 
-    init(projectPath: URL, logger: Logger, semanticIndex: SemanticProjectIndex) {
+    public convenience init(projectPath: URL, logger: Logger, options: AnalysisOptions) {
+        self.init(
+            projectPath: projectPath,
+            logger: logger,
+            semanticIndex: SemanticProjectIndexCache.shared.index(for: projectPath, logger: logger),
+            options: options
+        )
+    }
+
+    init(projectPath: URL, logger: Logger, semanticIndex: SemanticProjectIndex, options: AnalysisOptions = AnalysisOptions()) {
         self.projectPath = projectPath
         self.logger = logger
         self.semanticIndex = semanticIndex
+        self.options = options
+    }
+
+    public var architectureDetectionEnabled: Bool {
+        options.enableArchitectureDetection
     }
 
     /// Detect the dominant architecture pattern using semantic evidence only.
     public func detectArchitecturePattern() async throws -> ArchitecturePattern {
         logger.debug("🏗️ Detecting architecture pattern in \(projectPath.path)")
 
+        guard options.enableArchitectureDetection else {
+            logger.debug("🏗️ Architecture detection skipped because it is disabled in analysis options")
+            return .custom
+        }
+
         let snapshot = try await semanticIndex.snapshot()
+        return detectArchitecture(in: snapshot).dominantPattern
+    }
 
-        if hasMVVMEvidence(in: snapshot) {
-            return .mvvm
+    /// Return the full semantic architecture scoring result for the current workspace.
+    public func detectArchitecture() async throws -> ArchitectureDetectionResult {
+        logger.debug("🏗️ Scoring architecture patterns in \(projectPath.path)")
+
+        guard options.enableArchitectureDetection else {
+            logger.debug("🏗️ Architecture scoring skipped because it is disabled in analysis options")
+            return ArchitectureDetectionResult(dominantPattern: .custom, scores: [:], isEnabled: false)
         }
 
-        if hasCleanArchitectureEvidence(in: snapshot) {
-            return .cleanArchitecture
+        let snapshot = try await semanticIndex.snapshot()
+        return detectArchitecture(in: snapshot)
+    }
+
+    func detectArchitecture(in snapshot: SemanticProjectSnapshot) -> ArchitectureDetectionResult {
+        guard options.enableArchitectureDetection else {
+            return ArchitectureDetectionResult(dominantPattern: .custom, scores: [:], isEnabled: false)
         }
 
-        if hasFeaturesBasedEvidence(in: snapshot) {
-            return .featuresBased
+        let scores = architectureScores(in: snapshot)
+        let ranked = scores
+            .filter { $0.key != .custom }
+            .sorted { lhs, rhs in
+                if lhs.value == rhs.value {
+                    return architecturePriority(lhs.key) < architecturePriority(rhs.key)
+                }
+                return lhs.value > rhs.value
+            }
+
+        if let best = ranked.first, best.value >= minimumConfidenceScore(for: best.key) {
+            return ArchitectureDetectionResult(dominantPattern: best.key, scores: scores, isEnabled: true)
         }
 
-        if hasMVCEvidence(in: snapshot) {
-            return .mvc
-        }
-
-        if hasModularEvidence(in: snapshot) {
-            return .modular
-        }
-
-        return .custom
+        return ArchitectureDetectionResult(dominantPattern: .custom, scores: scores, isEnabled: true)
     }
 
     /// Extract modules and semantically classified feature components.
@@ -216,20 +251,398 @@ public final class ArchitectureAnalyzer {
 
     // MARK: - Semantic Detection
 
+    private func architectureScores(in snapshot: SemanticProjectSnapshot) -> [ArchitecturePattern: Int] {
+        let protocols = Set(snapshot.types.filter { $0.kind == "protocol" }.map(\.name))
+        let observables = snapshot.types.filter(isObservableType)
+        let observableNames = Set(observables.map(\.name))
+        let views = snapshot.types.filter(isPresentationView)
+        let controllers = snapshot.types.filter(isControllerType)
+        let presentationTypes = snapshot.types.filter { isPresentationType($0) || isObservableType($0) }
+        let repositories = snapshot.types.filter { isRepositoryType($0, protocolNames: protocols) }
+        let repositoryNames = Set(repositories.map(\.name))
+        let domainNames = Set(
+            snapshot.types
+                .filter { isDomainType($0, protocolNames: protocols) && $0.kind != "protocol" }
+                .map(\.name)
+        )
+        let roleIndex = ArchitectureRoleIndex(snapshot: snapshot)
+
+        let mvvm = scoreMVVM(
+            views: views,
+            observableNames: observableNames,
+            observables: observables
+        )
+        let mvc = scoreMVC(
+            controllers: controllers,
+            domainNames: domainNames,
+            observableNames: observableNames
+        )
+        let mvp = scoreMVP(
+            snapshot: snapshot,
+            roleIndex: roleIndex,
+            observableNames: observableNames
+        )
+        let viper = scoreVIPER(
+            snapshot: snapshot,
+            roleIndex: roleIndex,
+            repositoryNames: repositoryNames,
+            protocolNames: protocols
+        )
+        let coordinator = scoreCoordinator(snapshot: snapshot, roleIndex: roleIndex)
+        let tca = scoreTCA(snapshot: snapshot, views: views)
+        let cleanArchitecture = scoreCleanArchitecture(
+            snapshot: snapshot,
+            presentationTypes: presentationTypes,
+            adapterTypes: repositories,
+            protocolNames: protocols
+        )
+        let featuresBased = scoreFeaturesBased(snapshot: snapshot)
+        let modular = scoreModular(snapshot: snapshot)
+
+        return [
+            .mvc: mvc,
+            .mvvm: mvvm,
+            .mvp: mvp,
+            .viper: viper,
+            .coordinator: coordinator,
+            .tca: tca,
+            .featuresBased: featuresBased,
+            .cleanArchitecture: cleanArchitecture,
+            .modular: modular,
+            .custom: 0
+        ]
+    }
+
+    private func scoreMVVM(
+        views: [SemanticTypeSummary],
+        observableNames: Set<String>,
+        observables: [SemanticTypeSummary]
+    ) -> Int {
+        guard !views.isEmpty, !observables.isEmpty else {
+            return 0
+        }
+
+        var score = 0
+        let observableLikeNames = observableNames.union(
+            Set(observables.map(\.name).filter { normalizedIdentifier($0).contains("viewmodel") })
+        )
+
+        for view in views {
+            let references = Set(view.memberTypeNames).union(view.referencedNames)
+            if view.hasStateObjectWrapper {
+                score += 2
+            }
+            if !references.intersection(observableLikeNames).isEmpty {
+                score += 2
+            }
+        }
+
+        if observables.contains(where: { normalizedIdentifier($0.name).contains("viewmodel") }) {
+            score += 2
+        }
+
+        return min(12, score)
+    }
+
+    private func scoreMVC(
+        controllers: [SemanticTypeSummary],
+        domainNames: Set<String>,
+        observableNames: Set<String>
+    ) -> Int {
+        guard !controllers.isEmpty, !domainNames.isEmpty else {
+            return 0
+        }
+
+        var score = 0
+        for controller in controllers {
+            let referencedNames = Set(controller.memberTypeNames).union(controller.referencedNames)
+            if !referencedNames.intersection(domainNames).isEmpty {
+                score += 2
+            }
+            if referencedNames.intersection(observableNames).isEmpty {
+                score += 1
+            }
+        }
+
+        return min(10, score)
+    }
+
+    private func scoreMVP(
+        snapshot: SemanticProjectSnapshot,
+        roleIndex: ArchitectureRoleIndex,
+        observableNames: Set<String>
+    ) -> Int {
+        guard !roleIndex.presenters.isEmpty else {
+            return 0
+        }
+
+        let presenterNames = Set(roleIndex.presenters.map(\.name))
+        let presenterProtocolNames = Set(
+            roleIndex.presenters
+                .filter { $0.kind == "protocol" }
+                .map(\.name)
+        )
+        let presentationViews = snapshot.types.filter(isPresentationView)
+        let candidateViews = presentationViews.filter { type in
+            let referencedNames = Set(type.memberTypeNames).union(type.referencedNames)
+            return !referencedNames.intersection(presenterNames.union(presenterProtocolNames)).isEmpty
+        }
+        let presentersTouchObservable = roleIndex.presenters.contains { presenter in
+            let referencedNames = Set(presenter.memberTypeNames).union(presenter.referencedNames)
+            return !referencedNames.intersection(observableNames).isEmpty
+        }
+
+        guard !candidateViews.isEmpty, !presentersTouchObservable else {
+            return 0
+        }
+
+        var score = 0
+        score += min(4, candidateViews.count * 2)
+        score += min(4, roleIndex.presenters.count)
+
+        if roleIndex.presenters.contains(where: { presenter in
+            let referencedNames = Set(presenter.memberTypeNames).union(presenter.referencedNames)
+            return !referencedNames.intersection(roleIndex.models.union(roleIndex.services)).isEmpty
+        }) {
+            score += 3
+        }
+
+        return min(12, score)
+    }
+
+    private func scoreVIPER(
+        snapshot: SemanticProjectSnapshot,
+        roleIndex: ArchitectureRoleIndex,
+        repositoryNames: Set<String>,
+        protocolNames: Set<String>
+    ) -> Int {
+        guard !roleIndex.presenters.isEmpty,
+              !roleIndex.interactors.isEmpty,
+              !roleIndex.routers.isEmpty else {
+            return 0
+        }
+
+        let presenterNames = Set(roleIndex.presenters.map(\.name))
+        let interactorNames = Set(roleIndex.interactors.map(\.name))
+        let routerNames = Set(roleIndex.routers.map(\.name))
+        let viewNames = roleIndex.views.union(roleIndex.presentationViews)
+
+        let viewReferencesPresenter = snapshot.types.contains { type in
+            (isPresentationView(type) || viewNames.contains(type.name)) &&
+            typeReferences(type, names: presenterNames)
+        }
+        let presenterReferencesInteractor = roleIndex.presenters.contains { presenter in
+            typeReferences(presenter, names: interactorNames)
+        }
+        let presenterReferencesRouter = roleIndex.presenters.contains { presenter in
+            typeReferences(presenter, names: routerNames)
+        }
+        let interactorTouchesDomain = roleIndex.interactors.contains { interactor in
+            let referencedNames = Set(interactor.memberTypeNames).union(interactor.referencedNames)
+            return !referencedNames.intersection(repositoryNames.union(protocolNames).union(roleIndex.entities)).isEmpty
+        }
+
+        guard viewReferencesPresenter, presenterReferencesInteractor, presenterReferencesRouter else {
+            return 0
+        }
+
+        var score = 0
+        score += min(3, roleIndex.presenters.count)
+        score += min(3, roleIndex.interactors.count)
+        score += min(2, roleIndex.routers.count)
+        if !roleIndex.views.isEmpty || !roleIndex.presentationViews.isEmpty {
+            score += 2
+        }
+        if !roleIndex.entities.isEmpty {
+            score += 1
+        }
+        if interactorTouchesDomain {
+            score += 2
+        }
+
+        return min(14, score)
+    }
+
+    private func scoreCoordinator(
+        snapshot: SemanticProjectSnapshot,
+        roleIndex: ArchitectureRoleIndex
+    ) -> Int {
+        guard !roleIndex.coordinators.isEmpty else {
+            return 0
+        }
+
+        let coordinatorNames = Set(roleIndex.coordinators.map(\.name))
+        let navigationSymbols: Set<String> = [
+            "NavigationPath",
+            "NavigationStack",
+            "UINavigationController",
+            "present",
+            "pushViewController",
+            "setViewControllers",
+            "show",
+            "navigationDestination"
+        ]
+        let startLikeFunctions = Set(
+            snapshot.declarations
+                .filter { $0.kind == "function" && $0.containerName != nil }
+                .filter { declaration in
+                    let tokens = normalizedTokens(in: declaration.name)
+                    return tokens.contains("start") || tokens.contains("coordinate") || tokens.contains("route")
+                }
+                .compactMap(\.containerName)
+        )
+        let coordinatorReferencesChildCoordinator = roleIndex.coordinators.contains { coordinator in
+            let referencedNames = Set(coordinator.memberTypeNames).union(coordinator.referencedNames)
+            return !referencedNames.intersection(coordinatorNames.subtracting([coordinator.name])).isEmpty
+        }
+        let coordinatorReferencesNavigation = roleIndex.coordinators.contains { coordinator in
+            let referencedNames = Set(coordinator.memberTypeNames)
+                .union(coordinator.referencedNames)
+                .union(coordinator.memberCalls)
+            return !referencedNames.intersection(navigationSymbols).isEmpty
+        }
+
+        var score = min(4, roleIndex.coordinators.count * 2)
+        if !startLikeFunctions.isEmpty {
+            score += 2
+        }
+        if coordinatorReferencesNavigation {
+            score += 3
+        }
+        if coordinatorReferencesChildCoordinator {
+            score += 2
+        }
+
+        return min(12, score)
+    }
+
+    private func scoreTCA(
+        snapshot: SemanticProjectSnapshot,
+        views: [SemanticTypeSummary]
+    ) -> Int {
+        let imports = Set(snapshot.importedModules)
+        let tcaSymbols: Set<String> = [
+            "BindingReducer",
+            "ComposableArchitecture",
+            "Dependency",
+            "DependencyValues",
+            "PresentationAction",
+            "PresentationState",
+            "Reducer",
+            "ReducerOf",
+            "ReducerProtocol",
+            "Scope",
+            "StackAction",
+            "StackState",
+            "Store",
+            "StoreOf",
+            "TestStore",
+            "WithViewStore"
+        ]
+        let tcaAttributes: Set<String> = ["ObservableState", "Reducer"]
+        let importsTCA = imports.contains("ComposableArchitecture")
+        let typeUsesTCA = snapshot.types.filter { type in
+            let attributes = Set(type.attributes).union(type.memberAttributes)
+            let referencedNames = Set(type.inheritedTypes)
+                .union(type.memberTypeNames)
+                .union(type.referencedNames)
+                .union(type.memberCalls)
+            return !attributes.intersection(tcaAttributes).isEmpty ||
+                !referencedNames.intersection(tcaSymbols).isEmpty
+        }
+        let nestedStateContainers = Set(
+            snapshot.declarations
+                .filter { $0.kind == "struct" && $0.name == "State" }
+                .compactMap(\.containerName)
+        )
+        let nestedActionContainers = Set(
+            snapshot.declarations
+                .filter { ["enum", "struct"].contains($0.kind) && $0.name == "Action" }
+                .compactMap(\.containerName)
+        )
+        let reducerContainers = nestedStateContainers.intersection(nestedActionContainers)
+        let viewStoreBindings = views.filter { view in
+            let referencedNames = Set(view.memberTypeNames).union(view.referencedNames).union(view.memberCalls)
+            return !referencedNames.intersection(["Store", "StoreOf", "WithViewStore", "ViewStore"]).isEmpty
+        }
+
+        guard importsTCA || !typeUsesTCA.isEmpty || !reducerContainers.isEmpty else {
+            return 0
+        }
+
+        var score = 0
+        if importsTCA {
+            score += 3
+        }
+        score += min(4, typeUsesTCA.count * 2)
+        score += min(4, reducerContainers.count * 2)
+        score += min(3, viewStoreBindings.count * 2)
+
+        return min(16, score)
+    }
+
+    private func scoreCleanArchitecture(
+        snapshot: SemanticProjectSnapshot,
+        presentationTypes: [SemanticTypeSummary],
+        adapterTypes: [SemanticTypeSummary],
+        protocolNames: Set<String>
+    ) -> Int {
+        guard !protocolNames.isEmpty, !presentationTypes.isEmpty, !adapterTypes.isEmpty else {
+            return 0
+        }
+
+        let presentationDependsOnProtocols = presentationTypes.filter { type in
+            !Set(type.memberTypeNames).intersection(protocolNames).isEmpty
+        }
+        let adaptersBackedByProtocols = adapterTypes.filter { type in
+            !Set(type.inheritedTypes).intersection(protocolNames).isEmpty
+        }
+
+        guard !presentationDependsOnProtocols.isEmpty, !adaptersBackedByProtocols.isEmpty else {
+            return 0
+        }
+
+        var score = 0
+        score += min(4, presentationDependsOnProtocols.count * 2)
+        score += min(4, adaptersBackedByProtocols.count * 2)
+        if scoreModular(snapshot: snapshot) > 0 {
+            score += 2
+        }
+
+        return min(12, score)
+    }
+
+    private func scoreFeaturesBased(snapshot: SemanticProjectSnapshot) -> Int {
+        let internalTargets = snapshot.packageTargets.filter { $0.type == "regular" }
+        let targetNames = Set(internalTargets.map(\.name))
+
+        if let executable = snapshot.packageTargets.first(where: { $0.type == "executable" }) {
+            let featureTargets = executable.dependencies.filter { targetNames.contains($0) }
+            if featureTargets.count >= 2 {
+                return min(10, featureTargets.count * 2)
+            }
+        }
+
+        if internalTargets.count >= 3 {
+            return min(8, internalTargets.count)
+        }
+
+        return 0
+    }
+
+    private func scoreModular(snapshot: SemanticProjectSnapshot) -> Int {
+        let internalTargets = snapshot.packageTargets.filter { $0.type != "test" }.count
+        guard internalTargets > 1 else {
+            return 0
+        }
+        return min(8, internalTargets * 2)
+    }
+
     private func hasMVVMEvidence(in snapshot: SemanticProjectSnapshot) -> Bool {
         let views = snapshot.types.filter(isPresentationView)
         let observables = snapshot.types.filter(isObservableType)
         let observableNames = Set(observables.map(\.name))
-
-        guard !views.isEmpty, !observables.isEmpty else {
-            return false
-        }
-
-        return views.contains { view in
-            view.hasStateObjectWrapper ||
-            !Set(view.memberTypeNames).intersection(observableNames).isEmpty ||
-            !Set(view.referencedNames).intersection(observableNames).isEmpty
-        }
+        return scoreMVVM(views: views, observableNames: observableNames, observables: observables) >= minimumConfidenceScore(for: .mvvm)
     }
 
     private func hasMVCEvidence(in snapshot: SemanticProjectSnapshot) -> Bool {
@@ -240,22 +653,7 @@ public final class ArchitectureAnalyzer {
                 .filter { isDomainType($0, protocolNames: []) && $0.kind != "protocol" }
                 .map(\.name)
         )
-
-        guard !controllers.isEmpty, !modelNames.isEmpty else {
-            return false
-        }
-
-        let controllerTouchesModel = controllers.contains { controller in
-            let referencedNames = Set(controller.memberTypeNames).union(controller.referencedNames)
-            return !referencedNames.intersection(modelNames).isEmpty
-        }
-
-        let controllerTouchesObservable = controllers.contains { controller in
-            let referencedNames = Set(controller.memberTypeNames).union(controller.referencedNames)
-            return !referencedNames.intersection(observableNames).isEmpty
-        }
-
-        return controllerTouchesModel && !controllerTouchesObservable
+        return scoreMVC(controllers: controllers, domainNames: modelNames, observableNames: observableNames) >= minimumConfidenceScore(for: .mvc)
     }
 
     private func hasCleanArchitectureEvidence(in snapshot: SemanticProjectSnapshot) -> Bool {
@@ -263,32 +661,88 @@ public final class ArchitectureAnalyzer {
         let protocolNames = Set(protocols.map(\.name))
         let presentationTypes = snapshot.types.filter { isPresentationType($0) || isObservableType($0) }
         let adapterTypes = snapshot.types.filter { isRepositoryType($0, protocolNames: protocolNames) }
-
-        guard !protocolNames.isEmpty, !presentationTypes.isEmpty, !adapterTypes.isEmpty else {
-            return false
-        }
-
-        let presentationDependsOnProtocols = presentationTypes.contains { type in
-            !Set(type.memberTypeNames).intersection(protocolNames).isEmpty
-        }
-
-        return presentationDependsOnProtocols && hasModularEvidence(in: snapshot)
+        return scoreCleanArchitecture(
+            snapshot: snapshot,
+            presentationTypes: presentationTypes,
+            adapterTypes: adapterTypes,
+            protocolNames: protocolNames
+        ) >= minimumConfidenceScore(for: .cleanArchitecture)
     }
 
     private func hasFeaturesBasedEvidence(in snapshot: SemanticProjectSnapshot) -> Bool {
-        let internalTargets = snapshot.packageTargets.filter { $0.type == "regular" }
-        let targetNames = Set(internalTargets.map(\.name))
-
-        if let executable = snapshot.packageTargets.first(where: { $0.type == "executable" }) {
-            let featureTargets = executable.dependencies.filter { targetNames.contains($0) }
-            return featureTargets.count >= 2
-        }
-
-        return internalTargets.count >= 3
+        scoreFeaturesBased(snapshot: snapshot) >= minimumConfidenceScore(for: .featuresBased)
     }
 
     private func hasModularEvidence(in snapshot: SemanticProjectSnapshot) -> Bool {
-        snapshot.packageTargets.filter { $0.type != "test" }.count > 1
+        scoreModular(snapshot: snapshot) >= minimumConfidenceScore(for: .modular)
+    }
+
+    private func minimumConfidenceScore(for pattern: ArchitecturePattern) -> Int {
+        switch pattern {
+        case .mvc:
+            return 3
+        case .mvvm:
+            return 4
+        case .mvp:
+            return 5
+        case .viper:
+            return 7
+        case .coordinator:
+            return 5
+        case .tca:
+            return 7
+        case .featuresBased:
+            return 4
+        case .cleanArchitecture:
+            return 6
+        case .modular:
+            return 4
+        case .custom:
+            return Int.max
+        }
+    }
+
+    private func architecturePriority(_ pattern: ArchitecturePattern) -> Int {
+        switch pattern {
+        case .tca:
+            return 0
+        case .viper:
+            return 1
+        case .cleanArchitecture:
+            return 2
+        case .mvvm:
+            return 3
+        case .mvp:
+            return 4
+        case .coordinator:
+            return 5
+        case .mvc:
+            return 6
+        case .featuresBased:
+            return 7
+        case .modular:
+            return 8
+        case .custom:
+            return 9
+        }
+    }
+
+    private func typeReferences(_ type: SemanticTypeSummary, names: Set<String>) -> Bool {
+        let referencedNames = Set(type.memberTypeNames)
+            .union(type.referencedNames)
+            .union(type.memberCalls)
+            .union(type.inheritedTypes)
+        return !referencedNames.intersection(names).isEmpty
+    }
+
+    private func normalizedTokens(in value: String) -> Set<String> {
+        Self.tokenizeIdentifier(value)
+    }
+
+    private func normalizedIdentifier(_ value: String) -> String {
+        value
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
     }
 
     // MARK: - Semantic Structure
@@ -491,11 +945,163 @@ public final class ArchitectureAnalyzer {
 public enum ArchitecturePattern: String, CaseIterable {
     case mvc                = "MVC"
     case mvvm               = "MVVM"
+    case mvp                = "MVP"
     case viper              = "VIPER"
+    case coordinator        = "Coordinator"
+    case tca                = "TCA"
     case featuresBased      = "Features-based"
     case cleanArchitecture  = "Clean Architecture"
     case modular            = "Modular"
     case custom             = "Custom"
+
+    public var identifier: String {
+        switch self {
+        case .mvc:
+            return "mvc"
+        case .mvvm:
+            return "mvvm"
+        case .mvp:
+            return "mvp"
+        case .viper:
+            return "viper"
+        case .coordinator:
+            return "coordinator"
+        case .tca:
+            return "tca"
+        case .featuresBased:
+            return "features_based"
+        case .cleanArchitecture:
+            return "clean_architecture"
+        case .modular:
+            return "modular"
+        case .custom:
+            return "custom"
+        }
+    }
+
+    public static func parse(_ value: String) -> ArchitecturePattern? {
+        let normalized = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+
+        return allCases.first {
+            $0.identifier == normalized ||
+            $0.rawValue
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+                .replacingOccurrences(of: "-", with: "_")
+                .replacingOccurrences(of: " ", with: "_") == normalized
+        }
+    }
+}
+
+public struct ArchitectureDetectionResult {
+    public let dominantPattern: ArchitecturePattern
+    public let scores: [ArchitecturePattern: Int]
+    public let isEnabled: Bool
+
+    public init(dominantPattern: ArchitecturePattern, scores: [ArchitecturePattern: Int], isEnabled: Bool) {
+        self.dominantPattern = dominantPattern
+        self.scores = scores
+        self.isEnabled = isEnabled
+    }
+
+    public func score(for pattern: ArchitecturePattern) -> Int {
+        scores[pattern, default: 0]
+    }
+}
+
+private struct ArchitectureRoleIndex {
+    let presenters: [SemanticTypeSummary]
+    let interactors: [SemanticTypeSummary]
+    let routers: [SemanticTypeSummary]
+    let coordinators: [SemanticTypeSummary]
+    let views: Set<String>
+    let presentationViews: Set<String>
+    let entities: Set<String>
+    let services: Set<String>
+    let models: Set<String>
+
+    init(snapshot: SemanticProjectSnapshot) {
+        func matches(_ type: SemanticTypeSummary, keywords: Set<String>) -> Bool {
+            keywords.contains { ArchitectureAnalyzer.matchesKeyword($0, in: type.name) }
+        }
+
+        presenters = snapshot.types.filter { matches($0, keywords: ["presenter"]) }
+        interactors = snapshot.types.filter { matches($0, keywords: ["interactor", "usecase"]) }
+        routers = snapshot.types.filter { matches($0, keywords: ["router", "routing", "wireframe"]) }
+        coordinators = snapshot.types.filter { matches($0, keywords: ["coordinator"]) }
+        views = Set(
+            snapshot.types
+                .filter { matches($0, keywords: ["view"]) && !ArchitectureAnalyzer.matchesKeyword("viewmodel", in: $0.name) }
+                .map(\.name)
+        )
+        presentationViews = Set(
+            snapshot.types
+                .filter { type in
+                    let inherited = Set(type.inheritedTypes)
+                    return inherited.contains("UIViewController") ||
+                        inherited.contains("NSViewController") ||
+                        inherited.contains("View")
+                }
+                .map(\.name)
+        )
+        entities = Set(
+            snapshot.types
+                .filter { matches($0, keywords: ["entity", "model"]) && !ArchitectureAnalyzer.matchesKeyword("viewmodel", in: $0.name) }
+                .map(\.name)
+        )
+        services = Set(snapshot.types.filter { matches($0, keywords: ["service", "repository", "client"]) }.map(\.name))
+        models = Set(
+            snapshot.types
+                .filter { matches($0, keywords: ["model"]) && !ArchitectureAnalyzer.matchesKeyword("viewmodel", in: $0.name) }
+                .map(\.name)
+        )
+    }
+}
+
+fileprivate extension ArchitectureAnalyzer {
+    static func tokenizeIdentifier(_ value: String) -> Set<String> {
+        var token = ""
+        var tokens: [String] = []
+
+        for scalar in value.unicodeScalars {
+            if CharacterSet.alphanumerics.contains(scalar) {
+                let character = String(scalar)
+                if scalar.properties.isUppercase, !token.isEmpty {
+                    tokens.append(token.lowercased())
+                    token = character
+                } else {
+                    token += character
+                }
+            } else if !token.isEmpty {
+                tokens.append(token.lowercased())
+                token = ""
+            }
+        }
+
+        if !token.isEmpty {
+            tokens.append(token.lowercased())
+        }
+
+        return Set(tokens)
+    }
+
+    static func matchesKeyword(_ keyword: String, in value: String) -> Bool {
+        let normalizedKeyword = keyword.lowercased()
+        let normalizedValue = value
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+
+        if normalizedValue.contains(normalizedKeyword) {
+            return true
+        }
+
+        let tokens = tokenizeIdentifier(value)
+        return tokens.contains(normalizedKeyword)
+    }
 }
 
 public struct ProjectStructure {
