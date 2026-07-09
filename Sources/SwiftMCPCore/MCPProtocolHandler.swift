@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import SourceKitLSP
 
 public final class MCPProtocolHandler {
     private let swiftLanguageServer: SwiftLanguageServer

@@ -5,6 +5,11 @@ All notable changes to the Swift MCP Server project will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-07-09
+
+### Changed
+- Extracted the SourceKit-LSP client into a standalone `SourceKitLSP` library target (and product): `SwiftLanguageServer`, the LSP value types, and `JSONValue` now live there, depending only on Foundation and swift-log. `SwiftMCPCore` depends on it and layers the MCP protocol on top. The dependency is one-directional — `SourceKitLSP` has no knowledge of MCP — so it can be reused on its own.
+
 ## [2.3.0] - 2026-07-09
 
 ### Fixed

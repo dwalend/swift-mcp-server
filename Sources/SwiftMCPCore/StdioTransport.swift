@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import SourceKitLSP
 
 /// STDIO transport implementation for MCP protocol
 /// Compatible with VS Code MCP and Serena integration

@@ -21,6 +21,10 @@ let package = Package(
             targets: ["SwiftMCPCore"]
         ),
         .library(
+            name: "SourceKitLSP",
+            targets: ["SourceKitLSP"]
+        ),
+        .library(
             name: "ModernConcurrency",
             targets: ["ModernConcurrency"]
         ),
@@ -40,8 +44,15 @@ let package = Package(
             ]
         ),
         .target(
+            name: "SourceKitLSP",
+            dependencies: [
+                .product(name: "Logging", package: "swift-log"),
+            ]
+        ),
+        .target(
             name: "SwiftMCPCore",
             dependencies: [
+                "SourceKitLSP",
                 "ModernConcurrency",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
@@ -58,7 +69,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SwiftMCPServerTests",
-            dependencies: ["SwiftMCPCore"]
+            dependencies: ["SwiftMCPCore", "SourceKitLSP"]
         ),
     ]
 )

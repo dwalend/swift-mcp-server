@@ -3,6 +3,7 @@ import Logging
 import NIO
 import NIOHTTP1
 import NIOFoundationCompat
+import SourceKitLSP
 
 public final class MCPServer: @unchecked Sendable {
     private let host: String

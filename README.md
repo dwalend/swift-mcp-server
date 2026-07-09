@@ -118,12 +118,18 @@ Tests cover the JSON-RPC/MCP request and response shapes, the exposed tool surfa
 ```text
 Sources/
 ├── SwiftMCPServer/      CLI entry point and transport bootstrapping
-├── SwiftMCPCore/        MCP protocol handling and the SourceKit-LSP client
+├── SwiftMCPCore/        MCP protocol, transports, and configuration
+├── SourceKitLSP/        standalone SourceKit-LSP client and language types
 └── ModernConcurrency/   concurrency helpers
 
 Tests/
 └── SwiftMCPServerTests/ protocol and SourceKit-LSP integration tests
 ```
+
+`SourceKitLSP` is a self-contained library (depends only on Foundation and
+swift-log) exposing `SwiftLanguageServer` and the LSP value types. It has no
+knowledge of MCP, so it can be depended on on its own; `SwiftMCPCore` layers
+the MCP protocol and transports on top of it.
 
 ## Notes
 

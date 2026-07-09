@@ -1,6 +1,7 @@
 import XCTest
 import Logging
 @testable import SwiftMCPCore
+import SourceKitLSP
 
 final class SwiftMCPServerTests: XCTestCase {
 
