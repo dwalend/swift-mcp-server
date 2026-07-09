@@ -2,9 +2,6 @@
   "name": "swift-mcp-server",
   "version": "1.0.0",
   "description": "Swift MCP Server for Serena MCP integration with SourceKit-LSP support",
-  "analysis": {
-    "enableArchitectureDetection": true
-  },
   "mcpServer": {
     "transport": {
       "type": "stdio",
@@ -18,34 +15,36 @@
       "httpFallback": true
     },
     "capabilities": {
-      "tools": ["find_symbols", "find_references", "get_definition", "get_hover_info", "format_document"],
+      "tools": ["find_symbols", "find_references", "get_definition", "get_hover_info", "format_document", "get_diagnostics"],
       "resources": ["swift://workspace"],
       "experimental": {
         "swiftLanguageSupport": true,
-        "sourceKitLSP": true
+        "sourceKitLSP": true,
+        "modernConcurrency": true,
+        "aiCodeAnalysis": false
       }
     }
   },
   "serenaIntegration": {
     "languageSupport": "swift",
     "tools": {
-      "find_symbol": {
+      "findSymbol": {
         "namePatterns": ["class", "function", "method", "variable", "protocol", "enum"],
         "searchTypes": ["substring", "exact", "regex"]
       },
-      "find_referencing_symbols": {
+      "findReferencingSymbols": {
         "supportedTypes": ["classes", "methods", "functions", "variables"]
       },
-      "symbol_operations": {
-        "insert_after_symbol": true,
-        "insert_before_symbol": true,
-        "replace_symbol_body": true
+      "symbolOperations": {
+        "insertAfterSymbol": true,
+        "insertBeforeSymbol": true,
+        "replaceSymbolBody": true
       }
     }
   },
   "requirements": {
     "swift": ">=5.9",
     "macos": ">=13.0",
-    "sourcekit-lsp": ">=1.0.0"
+    "sourceKitLSP": ">=1.0.0"
   }
 }

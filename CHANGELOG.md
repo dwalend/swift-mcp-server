@@ -5,6 +5,18 @@ All notable changes to the Swift MCP Server project will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-07-09
+
+### Changed
+- **Focused the tool surface on SourceKit-LSP.** The server now exposes exactly the operations that require a real language server: `find_symbols`, `find_references`, `get_definition`, `get_hover_info`, `format_document`, and `get_diagnostics`.
+
+### Removed
+- Heuristic project/architecture analysis, documentation and template generation, project-memory, iOS framework analysis, and the Apple SDK catalog, along with the `analyze_project`, `detect_architecture`, `analyze_symbol_usage`, `analyze_pop_usage`, `create_project_memory`, `generate_migration_plan`, `intelligent_project_memory`, `generate_documentation`, `analyze_ios_frameworks`, and `generate_template` tools. These either duplicated what an LLM client already does well or produced low-confidence heuristic output.
+- The `swift-syntax` dependency and the `analysis` configuration block, which are no longer needed.
+
+### Rationale
+The removed tools carried significant maintenance surface for little value: their output was either trivially derivable by the client or heuristic and unreliable. Concentrating on SourceKit-LSP keeps every remaining tool grounded in real compiler semantics.
+
 ## [1.0.0] - Latest Release
 
 ### Added

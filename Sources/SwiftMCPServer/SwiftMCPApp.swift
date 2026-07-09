@@ -265,10 +265,7 @@ struct SwiftMCPServer: AsyncParsableCommand {
             host: host,
             port: port,
             logger: logger,
-            workspaceRoot: workspaceURL,
-            runtimeConfiguration: MCPRuntimeConfiguration(
-                analysis: serverConfiguration.analysis ?? AnalysisOptions()
-            )
+            workspaceRoot: workspaceURL
         )
         
         // Setup graceful shutdown for HTTP server
@@ -286,10 +283,7 @@ struct SwiftMCPServer: AsyncParsableCommand {
         
         let stdinHandler = StdioTransport(
             logger: logger,
-            workspaceRoot: workspaceURL,
-            runtimeConfiguration: MCPRuntimeConfiguration(
-                analysis: serverConfiguration.analysis ?? AnalysisOptions()
-            )
+            workspaceRoot: workspaceURL
         )
         
         // Setup graceful shutdown for STDIO

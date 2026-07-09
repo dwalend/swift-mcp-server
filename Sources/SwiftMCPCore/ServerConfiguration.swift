@@ -57,13 +57,12 @@ public struct ServerConfiguration: Codable {
         }
         
         public static let defaultTools = [
-            "find_symbols", "find_references", "get_definition", 
-            "get_hover_info", "format_document", "analyze_project",
-            "generate_documentation"
+            "find_symbols", "find_references", "get_definition",
+            "get_hover_info", "format_document", "get_diagnostics"
         ]
-        
+
         public static let defaultResources = [
-            "swift://workspace", "swift://project", "swift://symbols"
+            "swift://workspace"
         ]
     }
     
@@ -180,7 +179,6 @@ public struct ServerConfiguration: Codable {
     public let name: String
     public let version: String
     public let description: String
-    public let analysis: AnalysisOptions?
     public let mcpServer: MCPServerConfig
     public let serenaIntegration: SerenaIntegration
     public let requirements: Requirements
@@ -200,7 +198,6 @@ public struct ServerConfiguration: Codable {
     public init(name: String = "swift-mcp-server",
                version: String = "1.0.0",
                description: String = "Professional Swift MCP Server with dual transport support",
-               analysis: AnalysisOptions? = nil,
                mcpServer: MCPServerConfig = MCPServerConfig(),
                serenaIntegration: SerenaIntegration = SerenaIntegration(),
                requirements: Requirements = Requirements(),
@@ -208,7 +205,6 @@ public struct ServerConfiguration: Codable {
         self.name = name
         self.version = version
         self.description = description
-        self.analysis = analysis
         self.mcpServer = mcpServer
         self.serenaIntegration = serenaIntegration
         self.requirements = requirements

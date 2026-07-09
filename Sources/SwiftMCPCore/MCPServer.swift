@@ -19,22 +19,20 @@ public final class MCPServer: @unchecked Sendable {
         host: String,
         port: Int,
         logger: Logger,
-        workspaceRoot: URL? = nil,
-        runtimeConfiguration: MCPRuntimeConfiguration = MCPRuntimeConfiguration()
+        workspaceRoot: URL? = nil
     ) {
         self.host = host
         self.port = port
         self.logger = logger
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
-        
+
         // Initialize modern concurrency integration
         self.modernConcurrency = ModernConcurrencyIntegration(logger: logger)
-        
+
         self.swiftLanguageServer = SwiftLanguageServer(logger: logger, workspaceRoot: workspaceRoot)
         self.mcpProtocolHandler = MCPProtocolHandler(
             swiftLanguageServer: swiftLanguageServer,
-            logger: logger,
-            runtimeConfiguration: runtimeConfiguration
+            logger: logger
         )
     }
     

@@ -1,58 +1,55 @@
 # Swift MCP Server
 
-Swift MCP Server is a Model Context Protocol server for Swift workspaces. It exposes navigation, diagnostics, formatting, and project-analysis tools over `stdio` or HTTP.
+A [Model Context Protocol](https://modelcontextprotocol.io) server that gives AI agents and editors semantic access to Swift code. It exposes SourceKit-LSP — Apple's official language server — over `stdio` or HTTP, so a client can navigate, inspect, format, and diagnose Swift without reimplementing a compiler front end.
 
-The project is intentionally split into two analysis layers:
-- `SourceKit-LSP` for editor-grade operations such as references, definitions, hover, formatting, and diagnostics.
-- `SwiftSyntax` plus `Package.swift` AST parsing for project structure, symbol indexing, and conservative architecture analysis.
-- `AppleSDKCatalog` for local Xcode SDK module discovery and official Apple documentation references used by iOS framework analysis.
+The server is deliberately small: it wraps the operations that require a real language server and nothing else. Anything an LLM can already do well from source text (summaries, docs, refactors, templates) is intentionally left to the client.
 
-## Status
+## Tools
 
-What works today:
-- MCP `initialize`, `tools/list`, `tools/call`, `resources/list`, and `resources/read`
-- `SourceKit-LSP`-backed `find_references`, `get_definition`, `get_hover_info`, `format_document`, and `get_diagnostics`
-- Syntax-aware `find_symbols`, `analyze_project`, `detect_architecture`, `analyze_symbol_usage`, and `analyze_pop_usage`
-- Local Xcode SDK cataloging for Apple framework/module discovery across imported Apple modules, with richer enrichments for `FoundationModels` and `ImagePlayground`
-- STDIO transport for editor integrations and HTTP transport for local API usage
+Every tool is backed by SourceKit-LSP and works on a single file addressed by path. Line and character positions are **0-based**.
 
-What this project does not claim:
-- It is not a whole-program compiler analysis framework
-- It does not guarantee that every project can be classified into a named architecture
-- It does not infer patterns from file names or folder names anymore
+| Tool | Purpose | Arguments |
+| --- | --- | --- |
+| `find_symbols` | List symbols declared in a file, filtered by name | `file_path`, `name_pattern` |
+| `find_references` | Find all references to the symbol at a position | `file_path`, `line`, `character` |
+| `get_definition` | Resolve the definition of the symbol at a position | `file_path`, `line`, `character` |
+| `get_hover_info` | Type and documentation for the symbol at a position | `file_path`, `line`, `character` |
+| `format_document` | Format a file and return the resulting edits | `file_path` |
+| `get_diagnostics` | Compiler errors and warnings for a file | `file_path` |
 
-Architecture detection is disabled by default. Enable it in server config or per MCP request if you want named-pattern detection.
-If semantic evidence is weak, `detect_architecture` returns `Custom` rather than guessing.
+The server also implements `initialize`, `tools/list`, `tools/call`, `resources/list`, and `resources/read`, and exposes a `swift://workspace` resource describing the active workspace.
 
 ## Requirements
 
 - Swift 5.9+
-- macOS with Xcode toolchain recommended
-- `sourcekit-lsp` available through Xcode or on `PATH` for navigation, diagnostics, and formatting
+- macOS with the Xcode toolchain (recommended)
+- `sourcekit-lsp` available through Xcode or on `PATH`
 
-The project still builds as a Swift package without SourceKit-LSP, but editor-grade tools will be limited.
+Navigation, hover, formatting, and diagnostics all depend on SourceKit-LSP. Without it the binary still runs but these tools cannot resolve symbols.
 
-## Quick Start
-
-Build:
+## Build
 
 ```bash
 swift build --configuration release
 ```
 
-Run in STDIO mode against the current workspace:
+The binary is produced at `.build/release/swift-mcp-server`.
+
+## Running
+
+STDIO transport (for editors and AI clients):
 
 ```bash
-./.build/release/swift-mcp-server --transport stdio --workspace .
+.build/release/swift-mcp-server --transport stdio --workspace /path/to/project
 ```
 
-Run in HTTP mode:
+HTTP transport (for local API use and testing):
 
 ```bash
-./.build/release/swift-mcp-server --transport http --workspace . --port 8080
+.build/release/swift-mcp-server --transport http --workspace /path/to/project --port 8080
 ```
 
-You can also use the helper script:
+The workspace can be passed with `--workspace <path>` or as a positional argument. A helper script is also available:
 
 ```bash
 ./swift-mcp.sh build
@@ -60,11 +57,9 @@ You can also use the helper script:
 ./swift-mcp.sh stdio
 ```
 
-## AI / Editor Integration
+## Editor / AI client integration
 
-The server is already usable by AI clients that support MCP over `stdio`. A local handshake with `initialize` and `tools/list` succeeds against the built binary.
-
-For MCP clients that speak over `stdio`, point them at the built binary:
+Point any MCP client that speaks `stdio` at the built binary:
 
 ```json
 {
@@ -79,116 +74,48 @@ For MCP clients that speak over `stdio`, point them at the built binary:
 }
 ```
 
-There is also a checked-in example at [`vscode-mcp-config.json`](vscode-mcp-config.json).
+This works with any local MCP client, including Claude Code / Claude Desktop and Cursor / VS Code style setups. A checked-in example lives in [`vscode-mcp-config.json`](vscode-mcp-config.json).
 
-This covers MCP-capable AI/editor clients in general, not just VS Code:
-- Claude Desktop / Claude Code style MCP setups
-- Cursor / VS Code style MCP setups
-- any local AI client that can spawn an MCP server over `stdio`
+## How it works
 
-## Tools
+The server keeps a single SourceKit-LSP session bound to the workspace and translates each MCP tool call into the matching LSP request:
 
-SourceKit-LSP-backed tools:
-- `find_references`
-- `get_definition`
-- `get_hover_info`
-- `format_document`
-- `get_diagnostics`
+- `find_symbols` → `textDocument/documentSymbol`, filtered by name
+- `find_references` → `textDocument/references`
+- `get_definition` → `textDocument/definition`
+- `get_hover_info` → `textDocument/hover`
+- `format_document` → `textDocument/formatting`
+- `get_diagnostics` → `textDocument/publishDiagnostics`
 
-Syntax/package-analysis tools:
-- `find_symbols`
-- `analyze_project`
-- `detect_architecture`
-- `analyze_symbol_usage`
-- `create_project_memory`
-- `generate_migration_plan`
-- `analyze_pop_usage`
-- `generate_documentation`
-- `analyze_ios_frameworks`
-- `generate_template`
-
-`analyze_ios_frameworks` now reports:
-- imported Apple modules resolved from the local Xcode SDK catalog
-- semantic symbol hits per imported Apple module
-- official documentation links for imported Apple modules
-- richer feature-level analysis for `FoundationModels` and `ImagePlayground`
-
-Project-level architecture detection is opt-in:
-- config: set `"analysis": { "enableArchitectureDetection": true }`
-- per request: pass `"enable_architecture_detection": true` to `analyze_project`, `detect_architecture`, `create_project_memory`, `generate_migration_plan`, or `analyze_ios_frameworks`
-
-State/cache helpers:
-- `intelligent_project_memory`
-
-## How Analysis Works
-
-`find_symbols`, `analyze_project`, and `detect_architecture` no longer scan raw text with regexes. They now build a parsed project snapshot from:
-- Swift declarations and references extracted with `SwiftSyntax`
-- import graphs and type relationships extracted from parsed AST nodes
-- target and dependency information extracted from `Package.swift` syntax
-
-That means the project analyzer can reason about:
-- concrete type declarations
-- protocol conformances and inherited types
-- observable/view relationships for MVVM-style detection
-- test targets and package dependencies
-- package modularity without shelling out to SwiftPM during analysis
-
-It also means some results are intentionally conservative:
-- `find_symbols` is syntax-aware, but not a cross-module compiler index
-- `detect_architecture` only reports patterns when code structure supports them
-- `analyze_project` reports structural metrics, not line-coverage or formal complexity proofs
-
-## Architecture Detection
-
-Current architecture detection is evidence-driven:
-- `TCA` when the workspace shows `ComposableArchitecture` reducers, nested `State` and `Action`, and store-backed views
-- `MVVM` when views depend on observable state types
-- `MVP` when passive views depend on presenter types and presenters own presentation flow without observable state models
-- `VIPER` when view, presenter, interactor, and router roles are all present with semantic wiring between them
-- `Coordinator` when navigation ownership is centralized in coordinator types with explicit routing/navigation APIs
-- `MVC` when controllers depend directly on model/domain types without an observable layer
-- `Clean Architecture` when presentation depends on protocol abstractions and data adapters implement those abstractions across module boundaries
-- `Features-based` when executable targets depend on multiple internal feature targets
-- `Modular` when the package is clearly split into multiple internal targets
-- `Custom` when the workspace does not expose enough evidence for a stronger label
-
-This keeps false positives lower than the old folder-name and file-name matching approach.
+Because results come from the compiler's own index, they reflect real Swift semantics rather than text heuristics.
 
 ## Development
 
-Run tests:
+Run the test suite:
 
 ```bash
 swift test
 ```
 
-Current test coverage includes:
-- JSON-RPC/MCP request and response shape
-- SourceKit-LSP formatting, diagnostics, hover, definitions, and references
-- semantic architecture detection for MVVM, TCA, VIPER, and Coordinator
-- `Package.swift` parsing for target and dependency analysis
+Tests cover the JSON-RPC/MCP request and response shapes, the exposed tool surface, and the SourceKit-LSP-backed operations (symbols, definitions, references, hover, formatting, diagnostics). Tests that require SourceKit-LSP skip automatically when it is not installed.
 
-## Project Layout
+## Project layout
 
 ```text
 Sources/
-├── SwiftMCPServer/      CLI entrypoint and transport bootstrapping
-├── SwiftMCPCore/        MCP protocol, SourceKit-LSP client, syntax analysis
+├── SwiftMCPServer/      CLI entry point and transport bootstrapping
+├── SwiftMCPCore/        MCP protocol handling and the SourceKit-LSP client
 └── ModernConcurrency/   concurrency helpers
 
 Tests/
-└── SwiftMCPServerTests/ integration and protocol tests
+└── SwiftMCPServerTests/ protocol and SourceKit-LSP integration tests
 ```
 
 ## Notes
 
-- Logs are written to `stderr` so STDIO MCP output stays clean
-- The workspace path can be passed either as `--workspace <path>` or as the positional argument accepted by the CLI
-- `analyze_project` defaults to the current workspace when no `project_path` is provided
+- Logs go to `stderr` so STDIO MCP output stays clean.
+- HTTP mode supports automatic port selection via `--port-min` / `--port-max`.
 
-## Related Docs
+## License
 
-- [`CONFIG_GUIDE.md`](CONFIG_GUIDE.md)
-- [`SERENA_INTEGRATION.md`](SERENA_INTEGRATION.md)
-- [`CONTRIBUTING.md`](CONTRIBUTING.md)
+See [LICENSE](LICENSE).

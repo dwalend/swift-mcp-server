@@ -29,7 +29,6 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.6.1"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.85.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.4.0"),
-        .package(url: "https://github.com/swiftlang/swift-syntax.git", exact: "603.0.0"),
     ],
     targets: [
         .executableTarget(
@@ -49,8 +48,6 @@ let package = Package(
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOFoundationCompat", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
-                .product(name: "SwiftParser", package: "swift-syntax"),
-                .product(name: "SwiftSyntax", package: "swift-syntax"),
             ]
         ),
         .target(

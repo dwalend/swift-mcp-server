@@ -13,16 +13,14 @@ public final class StdioTransport: @unchecked Sendable {
 
     public init(
         logger: Logger,
-        workspaceRoot: URL? = nil,
-        runtimeConfiguration: MCPRuntimeConfiguration = MCPRuntimeConfiguration()
+        workspaceRoot: URL? = nil
     ) {
         self.logger = logger
         self.modernConcurrency = ModernConcurrencyIntegration(logger: logger)
         self.swiftLanguageServer = SwiftLanguageServer(logger: logger, workspaceRoot: workspaceRoot)
         self.mcpProtocolHandler = MCPProtocolHandler(
             swiftLanguageServer: swiftLanguageServer,
-            logger: logger,
-            runtimeConfiguration: runtimeConfiguration
+            logger: logger
         )
     }
 
