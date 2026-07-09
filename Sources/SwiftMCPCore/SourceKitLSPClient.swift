@@ -371,8 +371,40 @@ actor SourceKitLSPClient {
         return params
     }
 
-    private func requestResult(method: String, params: JSONObject) async throws -> JSONValue {
-        try await sendRequest(method: method, params: params)
+    /// LSP error codes that indicate the server is not yet ready to answer a
+    /// semantic request (typically while SourceKit-LSP is still preparing or
+    /// indexing a freshly opened document) rather than a genuine failure.
+    /// These are transient and worth retrying for a short window.
+    private static let transientResponseErrorCodes: Set<Int> = [
+        -32002, // ServerNotInitialized
+        -32603, // InternalError
+        -32801, // ContentModified
+        -32802, // ServerCancelled
+        -32803  // RequestFailed
+    ]
+
+    private func requestResult(
+        method: String,
+        params: JSONObject,
+        readinessTimeout: TimeInterval = 5,
+        retryInterval: TimeInterval = 0.2
+    ) async throws -> JSONValue {
+        let deadline = Date().addingTimeInterval(readinessTimeout)
+
+        while true {
+            do {
+                return try await sendRequest(method: method, params: params)
+            } catch let error as SourceKitLSPClientError {
+                guard case .responseError(let code, _) = error,
+                      Self.transientResponseErrorCodes.contains(code),
+                      Date() < deadline else {
+                    throw error
+                }
+
+                logger.debug("SourceKit-LSP not ready for \(method) (code \(code)); retrying")
+                try await Task.sleep(nanoseconds: UInt64(retryInterval * 1_000_000_000))
+            }
+        }
     }
 
     private func requestDecodedArray<T: LSPJSONDecodable>(
