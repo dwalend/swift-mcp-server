@@ -102,4 +102,4 @@ For security-related questions or concerns:
 - **General Issues**: Create a GitHub issue (for non-security items)
 - **Documentation**: Check our security documentation
 
-Thank you for helping keep Swift MCP Server secure! 🔒
+Thank you for helping keep Swift MCP Server secure! 

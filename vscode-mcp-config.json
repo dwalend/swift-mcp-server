@@ -13,7 +13,6 @@
         ],
         "env": {
           "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Xcode.app/Contents/Developer/usr/bin",
-          "SWIFT_MCP_MODE": "vscode",
           "SOURCEKIT_LSP_PATH": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/sourcekit-lsp"
         },
         "cwd": "${workspaceFolder}",

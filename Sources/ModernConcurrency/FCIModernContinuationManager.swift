@@ -153,10 +153,10 @@ public actor FCIModernContinuationManager {
 
         #if DEBUG
             let message = """
-                ❌ CRITICAL: Attempted to resume continuation multiple times!
-                📍 Creation: \(creationInfo?.description ?? "Unknown")
-                ✅ First Resume: \(resumeInfo?.description ?? "Unknown")
-                🚫 Duplicate Attempt: \(currentAttempt.description)
+                CRITICAL: Attempted to resume continuation multiple times!
+                Creation: \(creationInfo?.description ?? "Unknown")
+                First Resume: \(resumeInfo?.description ?? "Unknown")
+                Duplicate Attempt: \(currentAttempt.description)
                 """
             assertionFailure(message)
         #else

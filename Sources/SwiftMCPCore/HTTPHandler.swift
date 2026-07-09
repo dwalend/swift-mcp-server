@@ -196,7 +196,7 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
             result: .object([
                 "name": "Swift MCP Server",
                 "version": "1.0.0",
-                "description": "Swift MCP Server for Serena MCP integration with SourceKit-LSP support",
+                "description": "A Model Context Protocol server exposing SourceKit-LSP for semantic Swift tooling",
                 "capabilities": [
                     "roots": ["listChanged": true],
                     "sampling": .object([:])

@@ -19,19 +19,19 @@ SERVER_BINARY="$SCRIPT_DIR/.build/release/swift-mcp-server"
 
 # Helper functions
 print_error() {
-    echo -e "${RED}❌ $1${NC}"
+    echo -e "${RED}$1${NC}"
 }
 
 print_success() {
-    echo -e "${GREEN}✅ $1${NC}"
+    echo -e "${GREEN}$1${NC}"
 }
 
 print_warning() {
-    echo -e "${YELLOW}⚠️ $1${NC}"
+    echo -e "${YELLOW}$1${NC}"
 }
 
 print_info() {
-    echo -e "${BLUE}ℹ️ $1${NC}"
+    echo -e "${BLUE}$1${NC}"
 }
 
 print_header() {
@@ -100,10 +100,7 @@ setup_vscode() {
         "args": [
           "--transport", "stdio",
           "\${workspaceFolder}"
-        ],
-        "env": {
-          "SWIFT_MCP_MODE": "vscode"
-        }
+        ]
       }
     }
   }
@@ -185,9 +182,9 @@ test_stdio() {
 
 run_persistent_stdio() {
     print_header
-    print_info "🔄 Starting persistent STDIO mode..."
-    print_info "💡 Server will stay alive for multiple requests"
-    print_info "📝 Send JSON MCP requests, Ctrl+C to exit"
+    print_info "Starting persistent STDIO mode..."
+    print_info "Server will stay alive for multiple requests"
+    print_info "Send JSON MCP requests, Ctrl+C to exit"
     echo
     
     if [ ! -f "$SERVER_BINARY" ]; then
@@ -207,7 +204,7 @@ run_persistent_stdio() {
 # Main setup function
 setup_all() {
     print_header
-    print_info "🚀 Setting up Swift MCP Server..."
+    print_info "Setting up Swift MCP Server..."
     echo
     
     # Step 1: Health check
@@ -230,17 +227,17 @@ setup_all() {
     test_stdio
     echo
     
-    print_success "🎉 Swift MCP Server setup completed!"
+    print_success "Swift MCP Server setup completed!"
     print_info ""
-    print_info "📋 What's available:"
+    print_info "What's available:"
     print_info "  • Server binary: $SERVER_BINARY"
     print_info "  • VS Code config: Ready to use"
     print_info "  • STDIO mode: Tested and working"
     print_info ""
-    print_info "🔄 To run persistent STDIO mode:"
+    print_info "To run persistent STDIO mode:"
     print_info "  $0 stdio"
     print_info ""
-    print_info "🛠️ Available commands:"
+    print_info "Available commands:"
     print_info "  $0 setup    - Full setup (default)"
     print_info "  $0 build    - Build server only"
     print_info "  $0 test     - Test functionality"

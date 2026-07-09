@@ -32,12 +32,12 @@ Thank you for your interest in contributing to Swift MCP Server! This document p
    ```bash
    swift build
    swift test
-   ./test-integration.sh
    ```
 
-3. **Run Quick Start**
+3. **Quick setup and smoke test**
    ```bash
-   ./quick-start.sh
+   ./swift-mcp.sh          # build, configure, and smoke-test
+   ./swift-mcp.sh test     # STDIO smoke test only
    ```
 
 ## Code Style
@@ -53,15 +53,15 @@ Thank you for your interest in contributing to Swift MCP Server! This document p
 ### Example Code Style
 
 ```swift
-/// Analyzes Swift project architecture patterns
-actor ProjectAnalyzer {
-    private let workspace: URL
-    private var analysisCache: [String: AnalysisResult] = [:]
-    
-    /// Performs comprehensive project analysis
-    /// - Parameter options: Analysis configuration options
-    /// - Returns: Detailed analysis results
-    func analyze(options: AnalysisOptions) async throws -> AnalysisResult {
+/// Sends requests to a SourceKit-LSP session.
+actor SourceKitLSPClient {
+    private let workspaceRoot: URL
+    private var openDocuments: [String: OpenDocumentState] = [:]
+
+    /// Returns the symbols declared in a file.
+    /// - Parameter fileURL: The file to inspect.
+    /// - Returns: The declared symbols.
+    func documentSymbols(fileURL: URL) async throws -> [LSPSymbolInfo] {
         // Implementation
     }
 }
@@ -85,7 +85,7 @@ swift test
 ### Integration Tests
 
 ```bash
-./test-integration.sh
+./swift-mcp.sh test
 ```
 
 ### Test Guidelines
@@ -227,4 +227,4 @@ Contributors will be acknowledged in:
 - GitHub contributors page
 - Release notes (for significant contributions)
 
-Thank you for contributing to Swift MCP Server! 🚀
+Thank you for contributing to Swift MCP Server! 

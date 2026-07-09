@@ -41,7 +41,7 @@ public final class ModernConcurrencyIntegration: @unchecked Sendable {
         // Initialize continuation manager for complex async workflows
         self.continuationManager = FCIModernContinuationManager()
         
-        logger.info("🚀 Modern Concurrency Integration initialized")
+        logger.info("Modern Concurrency Integration initialized")
     }
     
     // MARK: - Task Management
@@ -54,7 +54,7 @@ public final class ModernConcurrencyIntegration: @unchecked Sendable {
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
         
-        logger.debug("🔄 Starting analysis task: \(id)")
+        logger.debug("Starting analysis task: \(id)")
         
         // Use a simple retry policy to avoid type annotation issues
         let retryPolicy = ModernConcurrency.RetryPolicy()
@@ -68,11 +68,11 @@ public final class ModernConcurrencyIntegration: @unchecked Sendable {
                 operation: operation
             )
             
-            logger.debug("✅ Analysis task completed: \(id)")
+            logger.debug("Analysis task completed: \(id)")
             return result
             
         } catch {
-            logger.error("❌ Analysis task failed: \(id) - \(error)")
+            logger.error("Analysis task failed: \(id) - \(error)")
             throw error
         }
     }
@@ -83,7 +83,7 @@ public final class ModernConcurrencyIntegration: @unchecked Sendable {
         maxConcurrency: Int = 3
     ) async throws -> [String: Result<T, Error>] {
         
-        logger.info("🔄 Starting parallel analysis of \(tasks.count) tasks")
+        logger.info("Starting parallel analysis of \(tasks.count) tasks")
         
         let results = try await taskManager.executeParallelTasks(
             tasks: tasks,
@@ -94,7 +94,7 @@ public final class ModernConcurrencyIntegration: @unchecked Sendable {
             if case .success = $0 { return true } else { return nil }
         }.count
         
-        logger.info("✅ Parallel analysis completed: \(successCount)/\(tasks.count) successful")
+        logger.info("Parallel analysis completed: \(successCount)/\(tasks.count) successful")
         
         return results
     }
@@ -108,7 +108,7 @@ public final class ModernConcurrencyIntegration: @unchecked Sendable {
         expirationTime: TimeInterval? = 3600  // 1 hour default
     ) async {
         await threadSafeStorage.setValue(value, forKey: key)
-        logger.debug("💾 Stored analysis result: \(key)")
+        logger.debug("Stored analysis result: \(key)")
     }
     
     /// Retrieve cached analysis results safely
@@ -119,9 +119,9 @@ public final class ModernConcurrencyIntegration: @unchecked Sendable {
         let result = await threadSafeStorage.getValue(forKey: key, as: type)
         
         if result != nil {
-            logger.debug("🎯 Retrieved cached result: \(key)")
+            logger.debug("Retrieved cached result: \(key)")
         } else {
-            logger.debug("❌ No cached result found: \(key)")
+            logger.debug("No cached result found: \(key)")
         }
         
         return result
@@ -133,7 +133,7 @@ public final class ModernConcurrencyIntegration: @unchecked Sendable {
         observer: @escaping @Sendable (Any?, Any?) async -> Void
     ) async {
         let _ = await threadSafeStorage.addObserver(forKey: key, handler: observer)
-        logger.debug("👁️ Added observer for: \(key)")
+        logger.debug("Added observer for: \(key)")
     }
     
     // MARK: - Advanced Async Flows
@@ -144,14 +144,14 @@ public final class ModernConcurrencyIntegration: @unchecked Sendable {
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
         
-        logger.info("🔄 Starting workflow: \(workflowId)")
+        logger.info("Starting workflow: \(workflowId)")
         
         do {
             let result = try await operation()
-            logger.info("✅ Workflow completed: \(workflowId)")
+            logger.info("Workflow completed: \(workflowId)")
             return result
         } catch {
-            logger.error("❌ Workflow failed: \(workflowId) - \(error)")
+            logger.error("Workflow failed: \(workflowId) - \(error)")
             throw error
         }
     }
@@ -164,7 +164,7 @@ public final class ModernConcurrencyIntegration: @unchecked Sendable {
     ) async throws -> [String: Result<Any, Error>] {
         
         let batchId = "batch_\(analysisType)_\(UUID().uuidString.prefix(8))"
-        logger.info("🔄 Starting batch analysis: \(batchId) - \(files.count) files")
+        logger.info("Starting batch analysis: \(batchId) - \(files.count) files")
         
         // Create tasks for each file
         let tasks = files.enumerated().map { (index, file) in
@@ -181,7 +181,7 @@ public final class ModernConcurrencyIntegration: @unchecked Sendable {
             maxConcurrency: min(3, files.count)  // Max 3 concurrent file analyses
         )
         
-        logger.info("✅ Batch analysis completed: \(batchId)")
+        logger.info("Batch analysis completed: \(batchId)")
         return results
     }
     
@@ -200,20 +200,20 @@ public final class ModernConcurrencyIntegration: @unchecked Sendable {
     /// Cancel all running tasks (emergency stop)
     public func cancelAllTasks() async {
         await taskManager.cancelAll()
-        logger.warning("⚠️ All tasks cancelled")
+        logger.warning("All tasks cancelled")
     }
     
     /// Cancel specific task
     public func cancelTask(id: String) async {
         await taskManager.cancel(taskId: id)
-        logger.debug("❌ Task cancelled: \(id)")
+        logger.debug("Task cancelled: \(id)")
     }
     
     // MARK: - Cleanup
     
     /// Cleanup resources and save state
     public func shutdown() async {
-        logger.info("🔄 Shutting down modern concurrency integration...")
+        logger.info("Shutting down modern concurrency integration...")
         
         // Cancel all running tasks
         await cancelAllTasks()
@@ -221,7 +221,7 @@ public final class ModernConcurrencyIntegration: @unchecked Sendable {
         // Clear any cached state
         await threadSafeStorage.clear()
         
-        logger.info("✅ Modern concurrency integration shutdown complete")
+        logger.info("Modern concurrency integration shutdown complete")
     }
 }
 

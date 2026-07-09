@@ -64,13 +64,13 @@ public final class MCPServer: @unchecked Sendable {
         let channel = try await bootstrap.bind(host: host, port: port).get()
         self.channel = channel
         
-        logger.info("🚀 Swift MCP Server started on \(host):\(port)")
-        logger.info("📊 Modern concurrency enabled with enhanced task management")
-        logger.info("🛠️ Server is ready to handle MCP requests")
+        logger.info("Swift MCP Server started on \(host):\(port)")
+        logger.info("Modern concurrency enabled with enhanced task management")
+        logger.info("Server is ready to handle MCP requests")
         
         // Log resource usage
         let resourceUsage = await modernConcurrency.getResourceUsage()
-        logger.info("💾 Initial resource usage - Memory: \(resourceUsage.memoryMB)MB, CPU: \(resourceUsage.cpuPercentage)%, Network: \(resourceUsage.networkOperations)")
+        logger.info("Initial resource usage - Memory: \(resourceUsage.memoryMB)MB, CPU: \(resourceUsage.cpuPercentage)%, Network: \(resourceUsage.networkOperations)")
 
         // Warm up SourceKit-LSP in the background so the first tool call does
         // not pay the full startup and index-warmup latency.
@@ -83,7 +83,7 @@ public final class MCPServer: @unchecked Sendable {
     }
     
     public func stop() async throws {
-        logger.info("🔄 Shutting down Swift MCP Server...")
+        logger.info("Shutting down Swift MCP Server...")
         
         // Shutdown modern concurrency integration first
         await modernConcurrency.shutdown()
@@ -92,7 +92,7 @@ public final class MCPServer: @unchecked Sendable {
         try await channel?.close()
         try await group.shutdownGracefully()
         
-        logger.info("✅ Swift MCP Server stopped")
+        logger.info("Swift MCP Server stopped")
     }
     
     // MARK: - Modern Concurrency Access

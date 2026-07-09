@@ -14,7 +14,7 @@ Brief description of the changes in this PR.
 ## Testing
 
 - [ ] Unit tests pass (`swift test`)
-- [ ] Integration tests pass (`./test-integration.sh`)
+- [ ] Integration smoke test passes (`./swift-mcp.sh test`)
 - [ ] Manual testing completed
 - [ ] New tests added for new functionality
 

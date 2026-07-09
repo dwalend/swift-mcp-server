@@ -27,17 +27,19 @@ struct SwiftMCPServer: AsyncParsableCommand {
 
     static let configuration = CommandConfiguration(
         commandName: "swift-mcp-server",
-        abstract: "Production-ready Swift MCP Server with dual transport support for VS Code, Serena, and HTTP clients",
+        abstract: "MCP server exposing SourceKit-LSP so AI agents can navigate, refactor, and diagnose Swift semantically",
         discussion: """
-        Swift MCP Server provides comprehensive Swift project analysis through the Model Context Protocol.
-        
-        Transport Modes:
-        • STDIO: Direct integration with VS Code MCP extensions and Serena coding agents
-        • HTTP: RESTful API server for external tools and testing
-        
+        swift-mcp-server exposes SourceKit-LSP over the Model Context Protocol so an
+        AI agent or editor can navigate, inspect, refactor, and diagnose Swift (and
+        Objective-C/C/C++) using compiler-grade information rather than text search.
+
+        Transports:
+        • stdio: for MCP clients such as Claude Code, Claude Desktop, and Cursor
+        • http:  a local HTTP endpoint for API use and testing
+
         Examples:
-        • VS Code/Serena: swift-mcp-server --transport stdio --workspace /path/to/project
-        • HTTP API: swift-mcp-server --transport http --port-min 8080 --port-max 8090
+        • swift-mcp-server --transport stdio --workspace /path/to/project
+        • swift-mcp-server --transport http --workspace /path/to/project --port 8080
         """,
         version: "1.0.0"
     )
@@ -217,9 +219,9 @@ struct SwiftMCPServer: AsyncParsableCommand {
         let hasPackageSwift = FileManager.default.fileExists(atPath: packageSwiftPath)
         
         if hasPackageSwift {
-            logger.info("📦 Detected Swift Package at workspace")
+            logger.info("Detected Swift Package at workspace")
         } else {
-            logger.notice("⚠️ No Package.swift found - analysis may be limited")
+            logger.notice("No Package.swift found - analysis may be limited")
         }
         
         // Check for common Swift project indicators
@@ -227,39 +229,39 @@ struct SwiftMCPServer: AsyncParsableCommand {
             .filter { $0.hasSuffix(".swift") }
         
         if swiftFiles.isEmpty {
-            logger.warning("⚠️ No Swift files found in workspace root - check path")
+            logger.warning("No Swift files found in workspace root - check path")
         }
     }
     
     private func logStartupInfo(logger: Logger) {
-        logger.info("🚀 Starting Swift MCP Server")
-        logger.info("📋 Version: \(Self.configuration.version)")
-        logger.info("🔄 Transport: \(transport)")
-        logger.info("📊 Log Level: \(verbose ? "trace" : logLevel.rawValue)")
+        logger.info("Starting Swift MCP Server")
+        logger.info("Version: \(Self.configuration.version)")
+        logger.info("Transport: \(transport)")
+        logger.info("Log Level: \(verbose ? "trace" : logLevel.rawValue)")
         
         let resolvedWorkspace = workspace ?? workspacePath
         if let resolvedWorkspace = resolvedWorkspace {
-            logger.info("📁 Workspace: \(resolvedWorkspace)")
+            logger.info("Workspace: \(resolvedWorkspace)")
         }
         
         if transport == .http {
-            logger.info("🌐 Host: \(host)")
+            logger.info("Host: \(host)")
             if let minPort = portMin, let maxPort = portMax {
-                logger.info("🔌 Port Range: \(minPort)-\(maxPort)")
+                logger.info("Port Range: \(minPort)-\(maxPort)")
             } else {
-                logger.info("🔌 Port: \(port)")
+                logger.info("Port: \(port)")
             }
         }
         
         if dev {
-            logger.info("🛠️ Development mode: ACTIVE")
+            logger.info("Development mode: ACTIVE")
         }
     }
     
     // MARK: - Transport Implementations
     
     private func startHttpServer(host: String, port: Int, logger: Logger, workspaceURL: URL?) async throws {
-        logger.info("🌐 Initializing HTTP transport")
+        logger.info("Initializing HTTP transport")
         
         let server = MCPServer(
             host: host,
@@ -279,7 +281,7 @@ struct SwiftMCPServer: AsyncParsableCommand {
     }
     
     private func startStdioServer(logger: Logger, workspaceURL: URL?) async throws {
-        logger.info("📡 Initializing STDIO transport for AI/editor MCP integration")
+        logger.info("Initializing STDIO transport for AI/editor MCP integration")
         
         let stdinHandler = StdioTransport(
             logger: logger,

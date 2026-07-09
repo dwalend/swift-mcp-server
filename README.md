@@ -178,6 +178,7 @@ Tests cover the JSON-RPC / MCP request and response shapes, the exposed tool sur
 
 - Logs are written to `stderr` so STDIO MCP output stays clean.
 - HTTP mode supports automatic port selection via `--port-min` / `--port-max`.
+- Set `SOURCEKIT_LSP_PATH` to use a specific `sourcekit-lsp` binary (e.g. a custom toolchain); otherwise common install locations are probed.
 
 ## License
 

@@ -197,7 +197,7 @@ public struct ServerConfiguration: Codable {
     
     public init(name: String = "swift-mcp-server",
                version: String = "1.0.0",
-               description: String = "Professional Swift MCP Server with dual transport support",
+               description: String = "A Model Context Protocol server exposing SourceKit-LSP for semantic Swift tooling",
                mcpServer: MCPServerConfig = MCPServerConfig(),
                serenaIntegration: SerenaIntegration = SerenaIntegration(),
                requirements: Requirements = Requirements(),
@@ -218,11 +218,11 @@ public struct ServerConfiguration: Codable {
         do {
             let data = try Data(contentsOf: URL(fileURLWithPath: path))
             let config = try JSONDecoder().decode(ServerConfiguration.self, from: data)
-            logger?.info("📋 Configuration loaded from: \(path)")
+            logger?.info("Configuration loaded from: \(path)")
             return config
         } catch {
-            logger?.warning("⚠️ Failed to load config from \(path): \(error)")
-            logger?.info("📋 Using default configuration")
+            logger?.warning("Failed to load config from \(path): \(error)")
+            logger?.info("Using default configuration")
             return ServerConfiguration()
         }
     }
@@ -235,7 +235,7 @@ public struct ServerConfiguration: Codable {
         let data = try encoder.encode(self)
         try data.write(to: URL(fileURLWithPath: path))
         
-        logger?.info("💾 Configuration saved to: \(path)")
+        logger?.info("Configuration saved to: \(path)")
     }
     
     /// Validate configuration for consistency and requirements

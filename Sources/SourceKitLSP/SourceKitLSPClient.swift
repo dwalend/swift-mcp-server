@@ -185,7 +185,7 @@ actor SourceKitLSPClient {
         _ = try await sendRequest(method: "initialize", params: initializeParams)
         try sendNotification(method: "initialized", params: [:])
         isStarted = true
-        logger.info("✅ SourceKit-LSP session started")
+        logger.info("SourceKit-LSP session started")
     }
 
     func documentSymbols(fileURL: URL) async throws -> [LSPSymbolInfo] {

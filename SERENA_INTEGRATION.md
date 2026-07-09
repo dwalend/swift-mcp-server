@@ -7,10 +7,10 @@ This Swift MCP Server provides seamless integration with [Serena MCP](https://gi
 ## What is Serena?
 
 Serena is a powerful coding agent toolkit that turns LLMs into fully-featured development agents. It provides:
-- 🔧 Semantic code retrieval and editing tools (like IDE capabilities)
-- 🚀 Symbol-level code understanding and manipulation
-- 🆓 Free & open-source alternative to subscription-based coding agents
-- 📱 MCP integration with Claude Desktop, Claude Code, VSCode, Cursor, and more
+- Semantic code retrieval and editing tools (like IDE capabilities)
+- Symbol-level code understanding and manipulation
+- Free & open-source alternative to subscription-based coding agents
+- MCP integration with Claude Desktop, Claude Code, VSCode, Cursor, and more
 
 ## Prerequisites
 
@@ -385,11 +385,11 @@ let package = Package(
 
 ### Getting Help
 
-- 📖 [Serena Documentation](https://github.com/oraios/serena)
-- 🚀 [Swift MCP Server Repository](https://github.com/your-username/swift-mcp-server)
-- 🐛 [Report Issues](https://github.com/your-username/swift-mcp-server/issues)
-- 💬 [Discussions](https://github.com/oraios/serena/discussions)
-- 📧 Community Support: serena-mcp@oraios-ai.de
+- [Serena Documentation](https://github.com/oraios/serena)
+- [Swift MCP Server Repository](https://github.com/your-username/swift-mcp-server)
+- [Report Issues](https://github.com/your-username/swift-mcp-server/issues)
+- [Discussions](https://github.com/oraios/serena/discussions)
+- Community Support: serena-mcp@oraios-ai.de
 
 ### Contributing
 

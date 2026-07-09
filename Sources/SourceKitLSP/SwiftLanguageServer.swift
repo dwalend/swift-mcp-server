@@ -52,15 +52,23 @@ public final class SwiftLanguageServer {
             logger: logger
         )
 
-        logger.info("🚀 Swift Language Server initialized")
-        logger.info("📁 Workspace: \(self.workspaceRoot.path)")
-        logger.info("🔧 SourceKit-LSP: \(self.sourceKitLSPPath)")
+        logger.info("Swift Language Server initialized")
+        logger.info("Workspace: \(self.workspaceRoot.path)")
+        logger.info("SourceKit-LSP: \(self.sourceKitLSPPath)")
     }
 
     // MARK: - SourceKit-LSP Discovery
 
-    /// Find SourceKit-LSP executable in common locations
-    private static func findSourceKitLSP() -> String? {
+    /// Find the SourceKit-LSP executable. An explicit `SOURCEKIT_LSP_PATH`
+    /// environment variable wins (for custom toolchains), otherwise fall back
+    /// to the common install locations.
+    static func findSourceKitLSP() -> String? {
+        if let override = ProcessInfo.processInfo.environment["SOURCEKIT_LSP_PATH"],
+           !override.isEmpty,
+           FileManager.default.fileExists(atPath: override) {
+            return override
+        }
+
         let commonPaths = [
             "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/sourcekit-lsp",
             "/usr/local/bin/sourcekit-lsp",
@@ -83,7 +91,7 @@ public final class SwiftLanguageServer {
     // MARK: - Symbol Operations for MCP
 
     public func findSymbols(in filePath: String, namePattern: String) async throws -> [SymbolInfo] {
-        logger.debug("🔍 Finding symbols in \(filePath) with pattern: \(namePattern)")
+        logger.debug("Finding symbols in \(filePath) with pattern: \(namePattern)")
         return try await withInitialized {
             let normalizedPattern = namePattern.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             let symbols = try await sourceKitLSPClient.documentSymbols(fileURL: resolveFileURL(filePath))
@@ -103,7 +111,7 @@ public final class SwiftLanguageServer {
     }
 
     public func findReferences(at position: Position, in filePath: String) async throws -> [Location] {
-        logger.debug("📍 Finding references at \(position) in \(filePath)")
+        logger.debug("Finding references at \(position) in \(filePath)")
         return try await withInitialized {
             let locations = try await sourceKitLSPClient.references(
                 fileURL: resolveFileURL(filePath),
@@ -115,7 +123,7 @@ public final class SwiftLanguageServer {
     }
 
     public func getDefinition(at position: Position, in filePath: String) async throws -> [LocationLink] {
-        logger.debug("🎯 Getting definition at \(position) in \(filePath)")
+        logger.debug("Getting definition at \(position) in \(filePath)")
         return try await withInitialized {
             let definitions = try await sourceKitLSPClient.definition(
                 fileURL: resolveFileURL(filePath),
@@ -127,7 +135,7 @@ public final class SwiftLanguageServer {
     }
 
     public func getHover(at position: Position, in filePath: String) async throws -> Hover? {
-        logger.debug("💡 Getting hover info at \(position) in \(filePath)")
+        logger.debug("Getting hover info at \(position) in \(filePath)")
         return try await withInitialized {
             guard let hover = try await sourceKitLSPClient.hover(
                 fileURL: resolveFileURL(filePath),
@@ -141,7 +149,7 @@ public final class SwiftLanguageServer {
     }
 
     public func getDiagnostics(for filePath: String) async throws -> [Diagnostic] {
-        logger.debug("🔍 Getting diagnostics for \(filePath)")
+        logger.debug("Getting diagnostics for \(filePath)")
         return try await withInitialized {
             let diagnostics = try await sourceKitLSPClient.diagnostics(fileURL: resolveFileURL(filePath))
             return diagnostics.map(makeDiagnostic)
@@ -149,7 +157,7 @@ public final class SwiftLanguageServer {
     }
 
     public func formatDocument(at filePath: String) async throws -> [TextEdit] {
-        logger.debug("🎨 Formatting document at \(filePath)")
+        logger.debug("Formatting document at \(filePath)")
         return try await withInitialized {
             let edits = try await sourceKitLSPClient.formatDocument(fileURL: resolveFileURL(filePath))
             return edits.map(makeTextEdit)
