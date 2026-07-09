@@ -46,9 +46,11 @@ public final class StdioTransport: @unchecked Sendable {
             logger.trace("Received STDIO input")
 
             do {
-                let response = try await processRequest(line)
-                writeToStdout(response)
-                logger.trace("Sent STDIO response")
+                // Notifications (no `id`) return nil — they must not be answered.
+                if let response = try await processRequest(line) {
+                    writeToStdout(response)
+                    logger.trace("Sent STDIO response")
+                }
             } catch {
                 logger.error("Error processing request: \(error)")
                 writeToStdout(createErrorResponse(error: error))
@@ -58,27 +60,37 @@ public final class StdioTransport: @unchecked Sendable {
         await shutdownIfNeeded(logMessage: "Shutting down Swift MCP Server (STDIO)...")
     }
 
-    private func processRequest(_ input: String) async throws -> String {
+    /// Returns the encoded response string, or `nil` when the message is a
+    /// JSON-RPC notification (no `id`) — notifications are handled silently and
+    /// must never receive a reply (result or error).
+    private func processRequest(_ input: String) async throws -> String? {
         guard let data = input.data(using: .utf8) else {
             throw StdioError.invalidInput
         }
 
-        let response: MCPResponse
-
+        let request: MCPRequest
         do {
-            let request = try JSONDecoder().decode(MCPRequest.self, from: data)
-
-            do {
-                response = try await mcpProtocolHandler.handleRequest(request)
-            } catch let error as MCPError {
-                response = MCPResponse(id: request.id, error: error)
-            } catch {
-                logger.error("Unexpected request failure: \(error)")
-                response = MCPResponse(id: request.id, error: .internalError)
-            }
+            request = try JSONDecoder().decode(MCPRequest.self, from: data)
         } catch {
+            // A parse error still warrants a response (with a null id per spec).
             logger.error("Failed to decode STDIO request: \(error)")
-            response = MCPResponse(id: extractRequestID(from: data), error: .parseError)
+            return try encodeResponse(MCPResponse(id: extractRequestID(from: data), error: .parseError))
+        }
+
+        // Notifications carry no `id`; process them as no-ops and stay silent.
+        guard request.id != nil else {
+            logger.debug("Received notification '\(request.method)' (no response sent)")
+            return nil
+        }
+
+        let response: MCPResponse
+        do {
+            response = try await mcpProtocolHandler.handleRequest(request)
+        } catch let error as MCPError {
+            response = MCPResponse(id: request.id, error: error)
+        } catch {
+            logger.error("Unexpected request failure: \(error)")
+            response = MCPResponse(id: request.id, error: .internalError)
         }
 
         return try encodeResponse(response)
