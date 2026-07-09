@@ -8,6 +8,8 @@ Package.resolved
 *.xcworkspace/
 DerivedData/
 *.xcuserdata/
+*.xcuserdatad/
+xcuserdata/
 *.xccheckout
 *.moved-aside
 *.xcuserstate
