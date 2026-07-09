@@ -90,7 +90,9 @@ final class SwiftMCPServerTests: XCTestCase {
                 "search_workspace_symbols",
                 "rename_symbol",
                 "call_hierarchy",
-                "type_hierarchy"
+                "type_hierarchy",
+                "get_implementations",
+                "code_actions"
             ]
         )
     }
@@ -365,6 +367,61 @@ final class SwiftMCPServerTests: XCTestCase {
 
         let subtypes = try await server.typeHierarchy(at: Position(line: 0, character: 9), in: sourceFile.path, direction: .subtypes)
         XCTAssertTrue(subtypes.contains { $0.name.contains("EnglishGreeter") })
+    }
+
+    func testGetImplementationsFindsConcreteImpl() async throws {
+        try XCTSkipUnless(sourceKitLSPAvailable())
+
+        let workspace = try makeTemporaryPackage(named: "ImplementationsWorkspace")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let sourceFile = workspace.appendingPathComponent("Sources/ImplementationsWorkspace/main.swift")
+        try """
+        protocol Greeter {
+            func greet() -> String
+        }
+
+        struct EnglishGreeter: Greeter {
+            func greet() -> String { "hi" }
+        }
+        """
+            .write(to: sourceFile, atomically: true, encoding: .utf8)
+
+        let server = SwiftLanguageServer(logger: Logger(label: "test"), workspaceRoot: workspace)
+        defer { Task { await server.shutdown() } }
+
+        let implementations = try await server.getImplementations(at: Position(line: 1, character: 9), in: sourceFile.path)
+        XCTAssertFalse(implementations.isEmpty)
+    }
+
+    func testCodeActionsListsAndAppliesFixIt() async throws {
+        try XCTSkipUnless(sourceKitLSPAvailable())
+
+        let workspace = try makeTemporaryPackage(named: "CodeActionWorkspace")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let sourceFile = workspace.appendingPathComponent("Sources/CodeActionWorkspace/main.swift")
+        try """
+        func run() {
+            var message = "hi"
+            print(message)
+        }
+
+        run()
+        """
+            .write(to: sourceFile, atomically: true, encoding: .utf8)
+
+        let server = SwiftLanguageServer(logger: Logger(label: "test"), workspaceRoot: workspace)
+        defer { Task { await server.shutdown() } }
+
+        let actions = try await server.codeActions(atLine: 1, in: sourceFile.path)
+        let fixTitle = try XCTUnwrap(actions.first(where: { $0.title.contains("let") })?.title)
+
+        let edits = try await server.applyCodeAction(titled: fixTitle, atLine: 1, in: sourceFile.path)
+        XCTAssertFalse(edits.isEmpty)
+
+        let updated = try String(contentsOf: sourceFile, encoding: .utf8)
+        XCTAssertTrue(updated.contains("let message"))
     }
 
     // MARK: - Helpers

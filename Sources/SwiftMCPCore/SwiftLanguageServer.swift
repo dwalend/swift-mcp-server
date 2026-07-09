@@ -36,7 +36,6 @@ public final class SwiftLanguageServer {
     private let workspaceRoot: URL
     private let sourceKitLSPPath: String
     private let sourceKitLSPClient: SourceKitLSPClient
-    private var isInitialized: Bool = false
 
     /// The workspace root URL
     public var workspaceURL: URL {
@@ -74,15 +73,11 @@ public final class SwiftLanguageServer {
 
     // MARK: - LSP Communication
 
+    /// Ensure the SourceKit-LSP session is running. The underlying actor
+    /// guards against starting twice, so this is safe to call concurrently
+    /// from multiple requests.
     public func initialize() async throws {
-        guard !isInitialized else { return }
-
-        logger.info("🔄 Initializing SourceKit-LSP connection...")
-
         try await sourceKitLSPClient.start()
-
-        isInitialized = true
-        logger.info("✅ Swift Language Server initialized successfully")
     }
 
     // MARK: - Symbol Operations for MCP
@@ -169,7 +164,7 @@ public final class SwiftLanguageServer {
         }
     }
 
-    public func rename(at position: Position, in filePath: String, newName: String) async throws -> [RenameEdit] {
+    public func rename(at position: Position, in filePath: String, newName: String) async throws -> [AppliedEdit] {
         logger.debug("Renaming symbol at \(position) in \(filePath) to \(newName)")
         return try await withInitialized {
             let changes = try await sourceKitLSPClient.rename(
@@ -177,7 +172,39 @@ public final class SwiftLanguageServer {
                 position: makeLSPPosition(position),
                 newName: newName
             )
-            return try applyRename(changes)
+            return try applyWorkspaceEdit(changes)
+        }
+    }
+
+    public func getImplementations(at position: Position, in filePath: String) async throws -> [LocationLink] {
+        logger.debug("Finding implementations at \(position) in \(filePath)")
+        return try await withInitialized {
+            let links = try await sourceKitLSPClient.implementations(
+                fileURL: resolveFileURL(filePath),
+                position: makeLSPPosition(position)
+            )
+            return links.map(makeLocationLink)
+        }
+    }
+
+    public func codeActions(atLine line: Int, in filePath: String) async throws -> [CodeAction] {
+        logger.debug("Fetching code actions at line \(line) in \(filePath)")
+        return try await withInitialized {
+            let actions = try await sourceKitLSPClient.codeActions(fileURL: resolveFileURL(filePath), line: line)
+            return actions.map { CodeAction(title: $0.title, kind: $0.kind, isApplicable: $0.edit != nil) }
+        }
+    }
+
+    public func applyCodeAction(titled title: String, atLine line: Int, in filePath: String) async throws -> [AppliedEdit] {
+        logger.debug("Applying code action '\(title)' at line \(line) in \(filePath)")
+        return try await withInitialized {
+            let actions = try await sourceKitLSPClient.codeActions(fileURL: resolveFileURL(filePath), line: line)
+
+            guard let match = actions.first(where: { $0.title == title }), let edit = match.edit else {
+                return []
+            }
+
+            return try applyWorkspaceEdit(edit)
         }
     }
 
@@ -206,9 +233,8 @@ public final class SwiftLanguageServer {
     }
 
     public func shutdown() async {
-        logger.info("🛑 Swift Language Server shutdown")
+        logger.info("Swift Language Server shutdown")
         await sourceKitLSPClient.shutdown()
-        isInitialized = false
     }
 
     // MARK: - Helpers
@@ -274,8 +300,9 @@ public final class SwiftLanguageServer {
         )
     }
 
-    /// Apply a rename WorkspaceEdit to disk and report the files touched.
-    private func applyRename(_ changes: [String: [LSPTextEdit]]) throws -> [RenameEdit] {
+    /// Apply a WorkspaceEdit (from rename or a code action) to disk and report
+    /// the files touched.
+    private func applyWorkspaceEdit(_ changes: [String: [LSPTextEdit]]) throws -> [AppliedEdit] {
         // SourceKit-LSP can return the same file under aliased URIs (e.g.
         // /tmp vs /private/tmp on macOS). Collapse to the canonical path and
         // dedupe identical edits so each file is rewritten exactly once.
@@ -288,7 +315,7 @@ public final class SwiftLanguageServer {
             editsByPath[path, default: []].append(contentsOf: edits)
         }
 
-        var results: [RenameEdit] = []
+        var results: [AppliedEdit] = []
 
         for (path, edits) in editsByPath {
             let uniqueEdits = dedupeTextEdits(edits)
@@ -300,7 +327,7 @@ public final class SwiftLanguageServer {
                 try updated.write(to: url, atomically: true, encoding: .utf8)
             }
 
-            results.append(RenameEdit(path: path, editCount: uniqueEdits.count))
+            results.append(AppliedEdit(path: path, editCount: uniqueEdits.count))
         }
 
         return results.sorted { $0.path < $1.path }
@@ -409,13 +436,25 @@ public enum TypeHierarchyDirection: String {
     case subtypes
 }
 
-public struct RenameEdit {
+public struct AppliedEdit {
     public let path: String
     public let editCount: Int
 
     public init(path: String, editCount: Int) {
         self.path = path
         self.editCount = editCount
+    }
+}
+
+public struct CodeAction {
+    public let title: String
+    public let kind: String?
+    public let isApplicable: Bool
+
+    public init(title: String, kind: String?, isApplicable: Bool) {
+        self.title = title
+        self.kind = kind
+        self.isApplicable = isApplicable
     }
 }
 

@@ -5,6 +5,15 @@ All notable changes to the Swift MCP Server project will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-07-09
+
+### Added
+- `get_implementations` — find concrete implementations of a protocol requirement or method (`textDocument/implementation`).
+- `code_actions` — list compiler fix-its and refactorings available on a line, or apply one by title (writing its edits to disk). Declares `codeActionLiteralSupport` so SourceKit-LSP returns quickfix actions, and replays the original diagnostics into the request context so fix-its resolve.
+
+### Changed
+- `SwiftLanguageServer` no longer keeps a mutable `isInitialized` flag; startup is delegated to the SourceKit-LSP actor's idempotent guard, so the type is safe to share across concurrent requests.
+
 ## [2.1.0] - 2026-07-09
 
 ### Added

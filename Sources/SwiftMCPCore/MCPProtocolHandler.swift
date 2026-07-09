@@ -210,6 +210,33 @@ public final class MCPProtocolHandler {
                     directions: ["supertypes", "subtypes"],
                     directionDescription: "\"supertypes\" for parents/protocols, \"subtypes\" for subclasses/conformers. Defaults to subtypes."
                 )
+            ),
+            Tool(
+                name: "get_implementations",
+                description: "Find concrete implementations of the protocol requirement or method at a file position. Backed by SourceKit-LSP.",
+                inputSchema: positionSchema
+            ),
+            Tool(
+                name: "code_actions",
+                description: "List compiler fix-its and refactorings available on a line, or apply one by title (writing the change to disk). Backed by SourceKit-LSP.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "file_path": [
+                            "type": "string",
+                            "description": "Path to the Swift file"
+                        ],
+                        "line": [
+                            "type": "integer",
+                            "description": "Line number (0-based)"
+                        ],
+                        "apply": [
+                            "type": "string",
+                            "description": "Optional. Title of a listed code action to apply. Omit to just list available actions."
+                        ]
+                    ],
+                    "required": ["file_path", "line"]
+                ]
             )
         ]
 
@@ -250,6 +277,10 @@ public final class MCPProtocolHandler {
             result = try await handleCallHierarchy(arguments)
         case "type_hierarchy":
             result = try await handleTypeHierarchy(arguments)
+        case "get_implementations":
+            result = try await handleGetImplementations(arguments)
+        case "code_actions":
+            result = try await handleCodeActions(arguments)
         default:
             throw MCPError.toolNotFound(name)
         }
@@ -390,6 +421,47 @@ public final class MCPProtocolHandler {
         let direction = TypeHierarchyDirection(rawValue: arguments.string("direction") ?? "") ?? .subtypes
         let position = Position(line: line, character: character)
         return try await swiftLanguageServer.typeHierarchy(at: position, in: filePath, direction: direction)
+    }
+
+    private func handleGetImplementations(_ arguments: JSONObject) async throws -> [String] {
+        guard let filePath = arguments.string("file_path"),
+              let line = arguments.int("line"),
+              let character = arguments.int("character") else {
+            throw MCPError.invalidParams
+        }
+
+        let position = Position(line: line, character: character)
+        let locations = try await swiftLanguageServer.getImplementations(at: position, in: filePath)
+        return locations.map { "\($0.targetUri):\($0.targetRange.start.line):\($0.targetRange.start.character)" }
+    }
+
+    private func handleCodeActions(_ arguments: JSONObject) async throws -> String {
+        guard let filePath = arguments.string("file_path"),
+              let line = arguments.int("line") else {
+            throw MCPError.invalidParams
+        }
+
+        if let apply = arguments.string("apply") {
+            let edits = try await swiftLanguageServer.applyCodeAction(titled: apply, atLine: line, in: filePath)
+
+            guard !edits.isEmpty else {
+                return "No applicable code action titled '\(apply)' at line \(line)."
+            }
+
+            let totalEdits = edits.reduce(0) { $0 + $1.editCount }
+            let detail = edits.map { "\($0.path) (\($0.editCount) edits)" }.joined(separator: "\n")
+            return "Applied '\(apply)': \(totalEdits) edits across \(edits.count) file(s)\n\(detail)"
+        }
+
+        let actions = try await swiftLanguageServer.codeActions(atLine: line, in: filePath)
+
+        guard !actions.isEmpty else {
+            return "No code actions available at line \(line)."
+        }
+
+        return actions.enumerated().map { index, action in
+            "\(index + 1). \(action.title) [\(action.isApplicable ? "applicable" : "command-only")]"
+        }.joined(separator: "\n")
     }
 
     // MARK: - Resources

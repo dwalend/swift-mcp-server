@@ -29,6 +29,10 @@ actor SourceKitLSPClient {
     private var isShuttingDown = false
     private var openDocuments: [String: OpenDocumentState] = [:]
     private var latestDiagnostics: [String: [LSPDiagnostic]] = [:]
+    // Raw diagnostic payloads kept verbatim so they can be replayed into a
+    // codeAction request context (fix-its are matched against the original
+    // diagnostic, including fields we do not decode).
+    private var latestRawDiagnostics: [String: [JSONValue]] = [:]
     private var pendingRequests: [Int: CheckedContinuation<JSONValue, Error>] = [:]
     private var diagnosticWaiters: [String: [CheckedContinuation<[LSPDiagnostic], Error>]] = [:]
 
@@ -110,6 +114,14 @@ actor SourceKitLSPClient {
                     ],
                     "typeHierarchy": [
                         "dynamicRegistration": false
+                    ],
+                    "codeAction": [
+                        "dynamicRegistration": false,
+                        "codeActionLiteralSupport": [
+                            "codeActionKind": [
+                                "valueSet": ["", "quickfix", "refactor", "source"]
+                            ]
+                        ]
                     ]
                 ],
                 "workspace": [
@@ -294,6 +306,69 @@ actor SourceKitLSPClient {
         let method = supertypes ? "typeHierarchy/supertypes" : "typeHierarchy/subtypes"
         let result = try await requestResult(method: method, params: ["item": item.raw])
         return try decodeHierarchyItems(result)
+    }
+
+    func implementations(fileURL: URL, position: LSPPosition) async throws -> [LSPLocationLink] {
+        let document = try await prepareDocument(fileURL)
+
+        return try await poll(
+            timeout: indexReadinessTimeout,
+            operation: {
+                let targets: [LSPDefinitionTarget] = try await self.requestDecodedOneOrMany(
+                    method: "textDocument/implementation",
+                    params: self.textDocumentPositionParams(uri: document.uri, position: position),
+                    errorMessage: "Invalid implementation payload from SourceKit-LSP"
+                )
+                return targets.map(\.link)
+            },
+            until: { !$0.isEmpty }
+        )
+    }
+
+    func codeActions(fileURL: URL, line: Int) async throws -> [CodeActionResult] {
+        let document = try await prepareDocument(fileURL)
+
+        // Fix-its are matched against the original diagnostic, so replay the
+        // raw diagnostics on this line verbatim into the request context.
+        // Best-effort: if none have arrived we still return refactorings.
+        let lineDiagnostics = await currentRawDiagnostics(uri: document.uri).filter { value in
+            guard let range = value.objectValue?["range"]?.objectValue,
+                  let startLine = range["start"]?.objectValue?.int("line"),
+                  let endLine = range["end"]?.objectValue?.int("line") else {
+                return false
+            }
+            return startLine <= line && line <= endLine
+        }
+
+        let params: JSONObject = [
+            "textDocument": textDocumentIdentifier(document.uri),
+            "range": rangeJSON(startLine: line, startCharacter: 0, endLine: line + 1, endCharacter: 0),
+            "context": [
+                "diagnostics": .array(lineDiagnostics)
+            ]
+        ]
+
+        let result = try await requestResult(method: "textDocument/codeAction", params: params)
+        return try decodeCodeActions(result)
+    }
+
+    /// Non-destructive read of the raw diagnostics for a document: returns the
+    /// cached payload, otherwise waits briefly for the first publish. Never
+    /// throws or hangs, so it is safe to call on every code-action request.
+    private func currentRawDiagnostics(uri: String, timeout: TimeInterval = 3) async -> [JSONValue] {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while true {
+            if let cached = latestRawDiagnostics[uri] {
+                return cached
+            }
+
+            guard Date() < deadline else {
+                return []
+            }
+
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
     }
 
     /// Prepare a call/type hierarchy item at a position, retrying while the
@@ -494,6 +569,33 @@ actor SourceKitLSPClient {
         default:
             throw SwiftMCPError.communicationError("Invalid call hierarchy payload from SourceKit-LSP")
         }
+    }
+
+    private func decodeCodeActions(_ result: JSONValue) throws -> [CodeActionResult] {
+        guard case .array(let values) = result else {
+            return []
+        }
+
+        return try values.compactMap { value -> CodeActionResult? in
+            guard let object = value.objectValue, let title = object.string("title") else {
+                return nil
+            }
+
+            let edit = try object.object("edit").map { try Self.decodeWorkspaceEdit($0) }
+            return CodeActionResult(
+                title: title,
+                kind: object.string("kind"),
+                edit: edit,
+                hasCommand: object["command"] != nil
+            )
+        }
+    }
+
+    private func rangeJSON(startLine: Int, startCharacter: Int, endLine: Int, endCharacter: Int) -> JSONValue {
+        .object([
+            "start": .object(["line": .integer(startLine), "character": .integer(startCharacter)]),
+            "end": .object(["line": .integer(endLine), "character": .integer(endCharacter)])
+        ])
     }
 
     private static func decodeWorkspaceEdit(_ object: JSONObject) throws -> [String: [LSPTextEdit]] {
@@ -804,7 +906,10 @@ actor SourceKitLSPClient {
             return
         }
 
-        let diagnostics = (params.array("diagnostics") ?? []).compactMap { try? LSPDiagnostic(jsonValue: $0) }
+        let rawDiagnostics = params.array("diagnostics") ?? []
+        latestRawDiagnostics[uri] = rawDiagnostics
+
+        let diagnostics = rawDiagnostics.compactMap { try? LSPDiagnostic(jsonValue: $0) }
 
         if var waiters = diagnosticWaiters.removeValue(forKey: uri) {
             for continuation in waiters {
@@ -938,6 +1043,16 @@ struct LSPSymbolInfo: LSPJSONDecodable {
         self.containerName = object.string("containerName")
         self.detail = object.string("detail")
     }
+}
+
+/// A code action returned by `textDocument/codeAction`. `edit` is present for
+/// actions we can apply directly; `hasCommand` flags command-only actions that
+/// would need a server round-trip we do not perform.
+struct CodeActionResult {
+    let title: String
+    let kind: String?
+    let edit: [String: [LSPTextEdit]]?
+    let hasCommand: Bool
 }
 
 /// A call- or type-hierarchy item. `raw` preserves the original payload so it
