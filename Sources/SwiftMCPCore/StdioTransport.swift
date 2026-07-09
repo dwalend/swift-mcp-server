@@ -8,7 +8,6 @@ public final class StdioTransport: @unchecked Sendable {
     private let logger: Logger
     private let swiftLanguageServer: SwiftLanguageServer
     private let mcpProtocolHandler: MCPProtocolHandler
-    private let modernConcurrency: ModernConcurrencyIntegration
     private let shutdownLock = NSLock()
     private var hasShutdown = false
 
@@ -17,7 +16,6 @@ public final class StdioTransport: @unchecked Sendable {
         workspaceRoot: URL? = nil
     ) {
         self.logger = logger
-        self.modernConcurrency = ModernConcurrencyIntegration(logger: logger)
         self.swiftLanguageServer = SwiftLanguageServer(logger: logger, workspaceRoot: workspaceRoot)
         self.mcpProtocolHandler = MCPProtocolHandler(
             swiftLanguageServer: swiftLanguageServer,
@@ -27,11 +25,7 @@ public final class StdioTransport: @unchecked Sendable {
 
     public func start() async throws {
         logger.info("Swift MCP Server started with STDIO transport")
-        logger.info("Modern concurrency enabled with enhanced task management")
         logger.info("Server is ready to handle MCP requests via STDIO")
-
-        let resourceUsage = await modernConcurrency.getResourceUsage()
-        logger.info("Initial resource usage - Memory: \(resourceUsage.memoryMB)MB, CPU: \(resourceUsage.cpuPercentage)%, Network: \(resourceUsage.networkOperations)")
 
         // Warm up SourceKit-LSP in the background so the first tool call does
         // not pay the full startup and index-warmup latency.
@@ -140,7 +134,6 @@ public final class StdioTransport: @unchecked Sendable {
         }
 
         logger.info("\(logMessage)")
-        await modernConcurrency.shutdown()
         await swiftLanguageServer.shutdown()
         logger.info("Swift MCP Server (STDIO) stopped")
     }

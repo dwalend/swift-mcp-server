@@ -5,6 +5,11 @@ All notable changes to the Swift MCP Server project will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-07-09
+
+### Removed
+- The `ModernConcurrency` module and library product (~2k lines). Its task manager, thread-safe collections, and continuation helpers were dead weight — carried over from another project and unused by the MCP request path, which relies on Swift actors, structured concurrency, and SwiftNIO. The only observable use was a startup resource-usage log, now dropped. No behavior change; all tools and tests are unaffected.
+
 ## [2.5.0] - 2026-07-09
 
 ### Added

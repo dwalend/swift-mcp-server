@@ -157,8 +157,7 @@ Because results come from the compiler's own index, they reflect real language s
 Sources/
 ├── SwiftMCPServer/      CLI entry point and transport bootstrapping
 ├── SwiftMCPCore/        MCP protocol, transports, and configuration
-├── SourceKitLSP/        standalone SourceKit-LSP client and language types
-└── ModernConcurrency/   concurrency helpers
+└── SourceKitLSP/        standalone SourceKit-LSP client and language types
 
 Tests/
 └── SwiftMCPServerTests/ protocol and SourceKit-LSP integration tests

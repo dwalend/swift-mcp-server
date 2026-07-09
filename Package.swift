@@ -24,10 +24,6 @@ let package = Package(
             name: "SourceKitLSP",
             targets: ["SourceKitLSP"]
         ),
-        .library(
-            name: "ModernConcurrency",
-            targets: ["ModernConcurrency"]
-        ),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.6.1"),
@@ -53,17 +49,10 @@ let package = Package(
             name: "SwiftMCPCore",
             dependencies: [
                 "SourceKitLSP",
-                "ModernConcurrency",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOFoundationCompat", package: "swift-nio"),
-                .product(name: "Logging", package: "swift-log"),
-            ]
-        ),
-        .target(
-            name: "ModernConcurrency",
-            dependencies: [
                 .product(name: "Logging", package: "swift-log"),
             ]
         ),
