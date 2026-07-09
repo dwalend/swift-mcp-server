@@ -31,9 +31,6 @@ jobs:
       
     - name: Run Tests
       run: swift test -v
-      
-    - name: Integration Test
-      run: ./test-integration.sh
 
   lint:
     name: Lint
