@@ -27,6 +27,18 @@ The server also implements `initialize`, `tools/list`, `tools/call`, `resources/
 
 `search_workspace_symbols`, `rename_symbol`, `call_hierarchy`, `type_hierarchy`, and `get_implementations` rely on SourceKit-LSP's global index. Right after the server starts, the index may still be building; these tools wait a bounded amount of time for it to become ready before returning. `rename_symbol` and `code_actions` (when applying) modify files on disk.
 
+## Languages
+
+Every tool works on Swift, including SwiftUI (SwiftUI code is ordinary Swift).
+
+Objective-C, C, and C++ files are also supported: the server picks the LSP
+`languageId` from the file extension (`.m` → objective-c, `.mm` →
+objective-cpp, `.h` → objective-c, `.c` → c, `.cpp`/`.cc`/… → cpp), so
+SourceKit-LSP routes them to `clangd`. C-family files additionally require a
+`compile_commands.json` in the workspace so `clangd` can resolve compiler
+arguments — pure SwiftPM packages do not emit one, so generate it from your
+build (e.g. an Xcode or CMake export) for mixed Swift/Objective-C projects.
+
 ## Requirements
 
 - Swift 5.9+

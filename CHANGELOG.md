@@ -5,6 +5,11 @@ All notable changes to the Swift MCP Server project will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-07-09
+
+### Added
+- Objective-C / C / C++ support: the LSP `languageId` is now chosen from the file extension (`.m`, `.mm`, `.h`, `.c`, `.cpp`, …) instead of always being `swift`, so SourceKit-LSP routes C-family files to `clangd`. Verified end-to-end (`find_symbols` on an Objective-C `.m` with a `compile_commands.json`). SwiftUI already worked, being ordinary Swift.
+
 ## [2.4.0] - 2026-07-09
 
 ### Changed

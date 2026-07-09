@@ -512,7 +512,7 @@ actor SourceKitLSPClient {
             params: [
                 "textDocument": [
                     "uri": .string(uri),
-                    "languageId": "swift",
+                    "languageId": .string(Self.languageId(for: fileURL)),
                     "version": 1,
                     "text": .string(text)
                 ]
@@ -520,6 +520,27 @@ actor SourceKitLSPClient {
         )
         openDocuments[uri] = OpenDocumentState(version: 1, text: text)
         return 1
+    }
+
+    /// Map a file extension to an LSP languageId. SourceKit-LSP routes Swift
+    /// to sourcekitd and C/Objective-C/C++ to clangd based on this, so it must
+    /// be correct for mixed Swift/Objective-C projects (clangd additionally
+    /// needs a compile_commands.json to resolve C-family files).
+    static func languageId(for fileURL: URL) -> String {
+        switch fileURL.pathExtension.lowercased() {
+        case "m":
+            return "objective-c"
+        case "mm":
+            return "objective-cpp"
+        case "h":
+            return "objective-c"
+        case "c":
+            return "c"
+        case "cpp", "cc", "cxx", "hpp", "hh", "hxx":
+            return "cpp"
+        default:
+            return "swift"
+        }
     }
 
     // MARK: - Diagnostics

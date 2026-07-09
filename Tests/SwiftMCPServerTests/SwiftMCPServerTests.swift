@@ -1,7 +1,7 @@
 import XCTest
 import Logging
 @testable import SwiftMCPCore
-import SourceKitLSP
+@testable import SourceKitLSP
 
 final class SwiftMCPServerTests: XCTestCase {
 
@@ -423,6 +423,20 @@ final class SwiftMCPServerTests: XCTestCase {
 
         let updated = try String(contentsOf: sourceFile, encoding: .utf8)
         XCTAssertTrue(updated.contains("let message"))
+    }
+
+    func testLanguageIdMappingByExtension() {
+        func languageId(_ name: String) -> String {
+            SourceKitLSPClient.languageId(for: URL(fileURLWithPath: "/tmp/\(name)"))
+        }
+
+        XCTAssertEqual(languageId("View.swift"), "swift")
+        XCTAssertEqual(languageId("Legacy.m"), "objective-c")
+        XCTAssertEqual(languageId("Bridge.mm"), "objective-cpp")
+        XCTAssertEqual(languageId("Header.h"), "objective-c")
+        XCTAssertEqual(languageId("core.c"), "c")
+        XCTAssertEqual(languageId("engine.cpp"), "cpp")
+        XCTAssertEqual(languageId("NoExtension"), "swift")
     }
 
     // MARK: - Helpers
