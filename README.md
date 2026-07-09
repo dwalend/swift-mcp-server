@@ -16,8 +16,14 @@ Every tool is backed by SourceKit-LSP and works on a single file addressed by pa
 | `get_hover_info` | Type and documentation for the symbol at a position | `file_path`, `line`, `character` |
 | `format_document` | Format a file and return the resulting edits | `file_path` |
 | `get_diagnostics` | Compiler errors and warnings for a file | `file_path` |
+| `search_workspace_symbols` | Search symbols by name across the whole workspace | `query` |
+| `rename_symbol` | Rename a symbol across the workspace and write the edits to disk | `file_path`, `line`, `character`, `new_name` |
+| `call_hierarchy` | Find callers (`incoming`) or callees (`outgoing`) of a function | `file_path`, `line`, `character`, `direction` |
+| `type_hierarchy` | Find `supertypes` or `subtypes`/conformers of a type | `file_path`, `line`, `character`, `direction` |
 
 The server also implements `initialize`, `tools/list`, `tools/call`, `resources/list`, and `resources/read`, and exposes a `swift://workspace` resource describing the active workspace.
+
+`search_workspace_symbols`, `rename_symbol`, `call_hierarchy`, and `type_hierarchy` rely on SourceKit-LSP's global index. Right after the server starts, the index may still be building; these tools wait a bounded amount of time for it to become ready before returning. `rename_symbol` modifies files on disk.
 
 ## Requirements
 
@@ -86,6 +92,10 @@ The server keeps a single SourceKit-LSP session bound to the workspace and trans
 - `get_hover_info` → `textDocument/hover`
 - `format_document` → `textDocument/formatting`
 - `get_diagnostics` → `textDocument/publishDiagnostics`
+- `search_workspace_symbols` → `workspace/symbol`
+- `rename_symbol` → `textDocument/rename` (edits applied to disk)
+- `call_hierarchy` → `textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` / `outgoingCalls`
+- `type_hierarchy` → `textDocument/prepareTypeHierarchy` + `typeHierarchy/supertypes` / `subtypes`
 
 Because results come from the compiler's own index, they reflect real Swift semantics rather than text heuristics.
 

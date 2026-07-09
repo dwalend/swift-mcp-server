@@ -86,7 +86,11 @@ final class SwiftMCPServerTests: XCTestCase {
                 "get_definition",
                 "get_hover_info",
                 "format_document",
-                "get_diagnostics"
+                "get_diagnostics",
+                "search_workspace_symbols",
+                "rename_symbol",
+                "call_hierarchy",
+                "type_hierarchy"
             ]
         )
     }
@@ -258,6 +262,109 @@ final class SwiftMCPServerTests: XCTestCase {
         case .none:
             XCTFail("Expected hover content")
         }
+    }
+
+    func testWorkspaceSymbolSearchFindsDeclaration() async throws {
+        try XCTSkipUnless(sourceKitLSPAvailable())
+
+        let workspace = try makeTemporaryPackage(named: "WorkspaceSymbolWorkspace")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        try """
+        struct UniqueGreeterType {
+            func greet() -> String { "hi" }
+        }
+        """
+            .write(
+                to: workspace.appendingPathComponent("Sources/WorkspaceSymbolWorkspace/main.swift"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+        let server = SwiftLanguageServer(logger: Logger(label: "test"), workspaceRoot: workspace)
+        defer { Task { await server.shutdown() } }
+
+        let symbols = try await server.searchWorkspaceSymbols(query: "UniqueGreeterType")
+        XCTAssertTrue(symbols.contains { $0.name == "UniqueGreeterType" })
+    }
+
+    func testRenameSymbolRewritesDeclarationAndReferences() async throws {
+        try XCTSkipUnless(sourceKitLSPAvailable())
+
+        let workspace = try makeTemporaryPackage(named: "RenameWorkspace")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let sourceFile = workspace.appendingPathComponent("Sources/RenameWorkspace/main.swift")
+        try """
+        struct Greeter {
+            func greet() -> String { "hi" }
+        }
+
+        let value = Greeter().greet()
+        print(value)
+        """
+            .write(to: sourceFile, atomically: true, encoding: .utf8)
+
+        let server = SwiftLanguageServer(logger: Logger(label: "test"), workspaceRoot: workspace)
+        defer { Task { await server.shutdown() } }
+
+        let edits = try await server.rename(at: Position(line: 0, character: 7), in: sourceFile.path, newName: "Welcomer")
+        XCTAssertFalse(edits.isEmpty)
+
+        let updated = try String(contentsOf: sourceFile, encoding: .utf8)
+        XCTAssertTrue(updated.contains("struct Welcomer"))
+        XCTAssertTrue(updated.contains("Welcomer().greet()"))
+        XCTAssertFalse(updated.contains("Greeter"))
+    }
+
+    func testCallHierarchyFindsIncomingCaller() async throws {
+        try XCTSkipUnless(sourceKitLSPAvailable())
+
+        let workspace = try makeTemporaryPackage(named: "CallHierarchyWorkspace")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let sourceFile = workspace.appendingPathComponent("Sources/CallHierarchyWorkspace/main.swift")
+        try """
+        func makeGreeting() -> String { "hi" }
+
+        func run() {
+            _ = makeGreeting()
+        }
+
+        run()
+        """
+            .write(to: sourceFile, atomically: true, encoding: .utf8)
+
+        let server = SwiftLanguageServer(logger: Logger(label: "test"), workspaceRoot: workspace)
+        defer { Task { await server.shutdown() } }
+
+        let callers = try await server.callHierarchy(at: Position(line: 0, character: 5), in: sourceFile.path, direction: .incoming)
+        XCTAssertTrue(callers.contains { $0.name.contains("run") })
+    }
+
+    func testTypeHierarchyFindsConformer() async throws {
+        try XCTSkipUnless(sourceKitLSPAvailable())
+
+        let workspace = try makeTemporaryPackage(named: "TypeHierarchyWorkspace")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let sourceFile = workspace.appendingPathComponent("Sources/TypeHierarchyWorkspace/main.swift")
+        try """
+        protocol Greeter {
+            func greet() -> String
+        }
+
+        struct EnglishGreeter: Greeter {
+            func greet() -> String { "hi" }
+        }
+        """
+            .write(to: sourceFile, atomically: true, encoding: .utf8)
+
+        let server = SwiftLanguageServer(logger: Logger(label: "test"), workspaceRoot: workspace)
+        defer { Task { await server.shutdown() } }
+
+        let subtypes = try await server.typeHierarchy(at: Position(line: 0, character: 9), in: sourceFile.path, direction: .subtypes)
+        XCTAssertTrue(subtypes.contains { $0.name.contains("EnglishGreeter") })
     }
 
     // MARK: - Helpers

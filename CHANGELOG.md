@@ -5,6 +5,19 @@ All notable changes to the Swift MCP Server project will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-07-09
+
+### Added
+- Four index-backed SourceKit-LSP tools:
+  - `search_workspace_symbols` — find symbols by name across the whole workspace (`workspace/symbol`).
+  - `rename_symbol` — rename a symbol across the workspace and write the edits to disk (`textDocument/rename`).
+  - `call_hierarchy` — find callers (incoming) or callees (outgoing) of a function.
+  - `type_hierarchy` — find supertypes or subtypes/conformers of a type.
+- These wait a bounded amount of time for SourceKit-LSP's global index to become ready before returning, since it may still be building right after startup.
+
+### Fixed
+- `rename_symbol` collapses aliased file URIs (e.g. `/tmp` vs `/private/tmp`) to a canonical path and dedupes edits, so a file is never rewritten twice.
+
 ## [2.0.0] - 2026-07-09
 
 ### Changed

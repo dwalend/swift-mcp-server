@@ -11,6 +11,10 @@ actor SourceKitLSPClient {
         let uri: String
     }
 
+    /// Upper bound for waiting on index-backed requests (workspace symbols,
+    /// rename, call/type hierarchy) while background indexing completes.
+    private let indexReadinessTimeout: TimeInterval = 20
+
     private let executablePath: String
     private let workspaceRoot: URL
     private let logger: Logger
@@ -97,10 +101,22 @@ actor SourceKitLSPClient {
                     "hover": [
                         "contentFormat": ["markdown", "plaintext"]
                     ],
-                    "publishDiagnostics": [:]
+                    "publishDiagnostics": [:],
+                    "rename": [
+                        "dynamicRegistration": false
+                    ],
+                    "callHierarchy": [
+                        "dynamicRegistration": false
+                    ],
+                    "typeHierarchy": [
+                        "dynamicRegistration": false
+                    ]
                 ],
                 "workspace": [
-                    "workspaceFolders": true
+                    "workspaceFolders": true,
+                    "symbol": [
+                        "dynamicRegistration": false
+                    ]
                 ]
             ],
             "workspaceFolders": [
@@ -199,6 +215,103 @@ actor SourceKitLSPClient {
             ],
             errorMessage: "Invalid formatting payload from SourceKit-LSP"
         )
+    }
+
+    func workspaceSymbols(query: String) async throws -> [LSPSymbolInfo] {
+        try await start()
+
+        return try await poll(
+            timeout: indexReadinessTimeout,
+            operation: {
+                let result = try await self.requestResult(
+                    method: "workspace/symbol",
+                    params: ["query": .string(query)]
+                )
+                switch result {
+                case .null:
+                    return []
+                case .array(let values):
+                    return try values.map(LSPSymbolInfo.init(jsonValue:))
+                default:
+                    throw SwiftMCPError.communicationError("Invalid workspace/symbol payload from SourceKit-LSP")
+                }
+            },
+            until: { !$0.isEmpty }
+        )
+    }
+
+    func rename(fileURL: URL, position: LSPPosition, newName: String) async throws -> [String: [LSPTextEdit]] {
+        let document = try await prepareDocument(fileURL)
+
+        // Rename relies on the cross-reference index, which may still be
+        // building right after startup; retry until edits appear or we
+        // conclude the symbol simply is not renameable.
+        return try await poll(
+            timeout: indexReadinessTimeout,
+            operation: { () async throws -> [String: [LSPTextEdit]] in
+                let result = try await self.requestResult(
+                    method: "textDocument/rename",
+                    params: self.textDocumentPositionParams(
+                        uri: document.uri,
+                        position: position,
+                        additional: ["newName": .string(newName)]
+                    )
+                )
+
+                switch result {
+                case .null:
+                    return [:]
+                case .object(let object):
+                    return try Self.decodeWorkspaceEdit(object)
+                default:
+                    throw SwiftMCPError.communicationError("Invalid rename payload from SourceKit-LSP")
+                }
+            },
+            until: { !$0.isEmpty }
+        )
+    }
+
+    func callHierarchy(fileURL: URL, position: LSPPosition, incoming: Bool) async throws -> [LSPHierarchyItem] {
+        let document = try await prepareDocument(fileURL)
+
+        guard let item = try await prepareHierarchy(method: "textDocument/prepareCallHierarchy", uri: document.uri, position: position) else {
+            return []
+        }
+
+        let method = incoming ? "callHierarchy/incomingCalls" : "callHierarchy/outgoingCalls"
+        let key = incoming ? "from" : "to"
+        let result = try await requestResult(method: method, params: ["item": item.raw])
+        return try extractNestedHierarchyItems(result, key: key)
+    }
+
+    func typeHierarchy(fileURL: URL, position: LSPPosition, supertypes: Bool) async throws -> [LSPHierarchyItem] {
+        let document = try await prepareDocument(fileURL)
+
+        guard let item = try await prepareHierarchy(method: "textDocument/prepareTypeHierarchy", uri: document.uri, position: position) else {
+            return []
+        }
+
+        let method = supertypes ? "typeHierarchy/supertypes" : "typeHierarchy/subtypes"
+        let result = try await requestResult(method: method, params: ["item": item.raw])
+        return try decodeHierarchyItems(result)
+    }
+
+    /// Prepare a call/type hierarchy item at a position, retrying while the
+    /// index warms up (prepare returns an empty array until it is ready).
+    private func prepareHierarchy(method: String, uri: String, position: LSPPosition) async throws -> LSPHierarchyItem? {
+        let items = try await poll(
+            timeout: indexReadinessTimeout,
+            operation: { () async throws -> [LSPHierarchyItem] in
+                let prepared = try await self.requestResult(
+                    method: method,
+                    params: self.textDocumentPositionParams(uri: uri, position: position)
+                )
+                return try self.decodeHierarchyItems(prepared)
+            },
+            until: { !$0.isEmpty }
+        )
+
+        return items.first
     }
 
     func diagnostics(fileURL: URL, timeout: TimeInterval = 5) async throws -> [LSPDiagnostic] {
@@ -352,6 +465,59 @@ actor SourceKitLSPClient {
         }
 
         return try values.map(LSPSymbolInfo.init(jsonValue:))
+    }
+
+    private func decodeHierarchyItems(_ result: JSONValue) throws -> [LSPHierarchyItem] {
+        switch result {
+        case .null:
+            return []
+        case .array(let values):
+            return try values.map(LSPHierarchyItem.init(jsonValue:))
+        default:
+            throw SwiftMCPError.communicationError("Invalid hierarchy payload from SourceKit-LSP")
+        }
+    }
+
+    /// Incoming/outgoing call results wrap each item under a `from`/`to` key
+    /// alongside `fromRanges`. Pull out the nested hierarchy item.
+    private func extractNestedHierarchyItems(_ result: JSONValue, key: String) throws -> [LSPHierarchyItem] {
+        switch result {
+        case .null:
+            return []
+        case .array(let values):
+            return try values.compactMap { value in
+                guard let nested = value.objectValue?[key] else {
+                    return nil
+                }
+                return try LSPHierarchyItem(jsonValue: nested)
+            }
+        default:
+            throw SwiftMCPError.communicationError("Invalid call hierarchy payload from SourceKit-LSP")
+        }
+    }
+
+    private static func decodeWorkspaceEdit(_ object: JSONObject) throws -> [String: [LSPTextEdit]] {
+        var changes: [String: [LSPTextEdit]] = [:]
+
+        if let documentChanges = object.array("documentChanges") {
+            for change in documentChanges {
+                guard let changeObject = change.objectValue,
+                      let uri = changeObject.object("textDocument")?.string("uri"),
+                      let edits = changeObject.array("edits") else {
+                    continue
+                }
+                changes[uri, default: []].append(contentsOf: try edits.map(LSPTextEdit.init(jsonValue:)))
+            }
+        } else if let changeMap = object.object("changes") {
+            for (uri, value) in changeMap {
+                guard let edits = value.arrayValue else {
+                    continue
+                }
+                changes[uri, default: []].append(contentsOf: try edits.map(LSPTextEdit.init(jsonValue:)))
+            }
+        }
+
+        return changes
     }
 
     private func textDocumentIdentifier(_ uri: String) -> JSONValue {
@@ -770,6 +936,34 @@ struct LSPSymbolInfo: LSPJSONDecodable {
         self.kind = kind
         self.location = try LSPLocation(jsonValue: locationValue)
         self.containerName = object.string("containerName")
+        self.detail = object.string("detail")
+    }
+}
+
+/// A call- or type-hierarchy item. `raw` preserves the original payload so it
+/// can be handed back verbatim to the incomingCalls/subtypes follow-up request.
+struct LSPHierarchyItem: LSPJSONDecodable {
+    let raw: JSONValue
+    let name: String
+    let kind: Int
+    let uri: String
+    let selectionRange: LSPRange
+    let detail: String?
+
+    init(jsonValue: JSONValue) throws {
+        guard let object = jsonValue.objectValue,
+              let name = object.string("name"),
+              let kind = object.int("kind"),
+              let uri = object.string("uri"),
+              let selectionRangeValue = object["selectionRange"] else {
+            throw SwiftMCPError.communicationError("Invalid hierarchy item payload from SourceKit-LSP")
+        }
+
+        self.raw = jsonValue
+        self.name = name
+        self.kind = kind
+        self.uri = uri
+        self.selectionRange = try LSPRange(jsonValue: selectionRangeValue)
         self.detail = object.string("detail")
     }
 }

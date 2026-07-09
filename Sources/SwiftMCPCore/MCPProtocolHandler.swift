@@ -85,6 +85,32 @@ public final class MCPProtocolHandler {
             "required": ["file_path"]
         ]
 
+        func hierarchySchema(directions: [String], directionDescription: String) -> JSONObject {
+            [
+                "type": "object",
+                "properties": [
+                    "file_path": [
+                        "type": "string",
+                        "description": "Path to the Swift file"
+                    ],
+                    "line": [
+                        "type": "integer",
+                        "description": "Line number (0-based)"
+                    ],
+                    "character": [
+                        "type": "integer",
+                        "description": "Character position (0-based)"
+                    ],
+                    "direction": [
+                        "type": "string",
+                        "enum": .array(directions.map(JSONValue.string)),
+                        "description": .string(directionDescription)
+                    ]
+                ],
+                "required": ["file_path", "line", "character"]
+            ]
+        }
+
         let tools = [
             Tool(
                 name: "find_symbols",
@@ -128,6 +154,62 @@ public final class MCPProtocolHandler {
                 name: "get_diagnostics",
                 description: "Get compiler diagnostics (errors and warnings) for a Swift document. Backed by SourceKit-LSP.",
                 inputSchema: filePathSchema
+            ),
+            Tool(
+                name: "search_workspace_symbols",
+                description: "Search for symbols by name across the whole workspace, not just one file. Backed by SourceKit-LSP's global index.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "query": [
+                            "type": "string",
+                            "description": "Symbol name or substring to search for"
+                        ]
+                    ],
+                    "required": ["query"]
+                ]
+            ),
+            Tool(
+                name: "rename_symbol",
+                description: "Rename the symbol at a file position across the whole workspace and write the changes to disk. Backed by SourceKit-LSP.",
+                inputSchema: [
+                    "type": "object",
+                    "properties": [
+                        "file_path": [
+                            "type": "string",
+                            "description": "Path to the Swift file"
+                        ],
+                        "line": [
+                            "type": "integer",
+                            "description": "Line number (0-based)"
+                        ],
+                        "character": [
+                            "type": "integer",
+                            "description": "Character position (0-based)"
+                        ],
+                        "new_name": [
+                            "type": "string",
+                            "description": "New name for the symbol"
+                        ]
+                    ],
+                    "required": ["file_path", "line", "character", "new_name"]
+                ]
+            ),
+            Tool(
+                name: "call_hierarchy",
+                description: "Find callers (incoming) or callees (outgoing) of the function at a file position. Backed by SourceKit-LSP.",
+                inputSchema: hierarchySchema(
+                    directions: ["incoming", "outgoing"],
+                    directionDescription: "\"incoming\" for callers, \"outgoing\" for callees. Defaults to incoming."
+                )
+            ),
+            Tool(
+                name: "type_hierarchy",
+                description: "Find supertypes or subtypes/conformers of the type at a file position. Backed by SourceKit-LSP.",
+                inputSchema: hierarchySchema(
+                    directions: ["supertypes", "subtypes"],
+                    directionDescription: "\"supertypes\" for parents/protocols, \"subtypes\" for subclasses/conformers. Defaults to subtypes."
+                )
             )
         ]
 
@@ -160,6 +242,14 @@ public final class MCPProtocolHandler {
             result = try await handleFormatDocument(arguments)
         case "get_diagnostics":
             result = try await handleGetDiagnostics(arguments)
+        case "search_workspace_symbols":
+            result = try await handleSearchWorkspaceSymbols(arguments)
+        case "rename_symbol":
+            result = try await handleRenameSymbol(arguments)
+        case "call_hierarchy":
+            result = try await handleCallHierarchy(arguments)
+        case "type_hierarchy":
+            result = try await handleTypeHierarchy(arguments)
         default:
             throw MCPError.toolNotFound(name)
         }
@@ -250,6 +340,58 @@ public final class MCPProtocolHandler {
         }
     }
 
+    private func handleSearchWorkspaceSymbols(_ arguments: JSONObject) async throws -> [SymbolInfo] {
+        guard let query = arguments.string("query") else {
+            throw MCPError.invalidParams
+        }
+
+        return try await swiftLanguageServer.searchWorkspaceSymbols(query: query)
+    }
+
+    private func handleRenameSymbol(_ arguments: JSONObject) async throws -> String {
+        guard let filePath = arguments.string("file_path"),
+              let line = arguments.int("line"),
+              let character = arguments.int("character"),
+              let newName = arguments.string("new_name") else {
+            throw MCPError.invalidParams
+        }
+
+        let position = Position(line: line, character: character)
+        let edits = try await swiftLanguageServer.rename(at: position, in: filePath, newName: newName)
+
+        guard !edits.isEmpty else {
+            return "No rename edits produced. The symbol may not be renameable, or the index is not ready yet."
+        }
+
+        let totalEdits = edits.reduce(0) { $0 + $1.editCount }
+        let detail = edits.map { "\($0.path) (\($0.editCount) edits)" }.joined(separator: "\n")
+        return "Renamed to '\(newName)': \(totalEdits) edits across \(edits.count) file(s)\n\(detail)"
+    }
+
+    private func handleCallHierarchy(_ arguments: JSONObject) async throws -> [SymbolInfo] {
+        guard let filePath = arguments.string("file_path"),
+              let line = arguments.int("line"),
+              let character = arguments.int("character") else {
+            throw MCPError.invalidParams
+        }
+
+        let direction = CallHierarchyDirection(rawValue: arguments.string("direction") ?? "") ?? .incoming
+        let position = Position(line: line, character: character)
+        return try await swiftLanguageServer.callHierarchy(at: position, in: filePath, direction: direction)
+    }
+
+    private func handleTypeHierarchy(_ arguments: JSONObject) async throws -> [SymbolInfo] {
+        guard let filePath = arguments.string("file_path"),
+              let line = arguments.int("line"),
+              let character = arguments.int("character") else {
+            throw MCPError.invalidParams
+        }
+
+        let direction = TypeHierarchyDirection(rawValue: arguments.string("direction") ?? "") ?? .subtypes
+        let position = Position(line: line, character: character)
+        return try await swiftLanguageServer.typeHierarchy(at: position, in: filePath, direction: direction)
+    }
+
     // MARK: - Resources
 
     private func handleResourcesList(_ request: MCPRequest) async throws -> MCPResponse {
@@ -310,9 +452,9 @@ public final class MCPProtocolHandler {
         case let string as String:
             return string
         case let strings as [String]:
-            return strings.joined(separator: "\n")
+            return strings.isEmpty ? "No results." : strings.joined(separator: "\n")
         case let symbols as [SymbolInfo]:
-            return symbols.map {
+            return symbols.isEmpty ? "No symbols found." : symbols.map {
                 "\($0.kind) \($0.name) @ \($0.location.uri):\($0.location.line):\($0.location.character)"
             }.joined(separator: "\n")
         default:

@@ -161,6 +161,50 @@ public final class SwiftLanguageServer {
         }
     }
 
+    public func searchWorkspaceSymbols(query: String) async throws -> [SymbolInfo] {
+        logger.debug("Searching workspace symbols for: \(query)")
+        return try await withInitialized {
+            let symbols = try await sourceKitLSPClient.workspaceSymbols(query: query)
+            return symbols.map(makeSymbolInfo)
+        }
+    }
+
+    public func rename(at position: Position, in filePath: String, newName: String) async throws -> [RenameEdit] {
+        logger.debug("Renaming symbol at \(position) in \(filePath) to \(newName)")
+        return try await withInitialized {
+            let changes = try await sourceKitLSPClient.rename(
+                fileURL: resolveFileURL(filePath),
+                position: makeLSPPosition(position),
+                newName: newName
+            )
+            return try applyRename(changes)
+        }
+    }
+
+    public func callHierarchy(at position: Position, in filePath: String, direction: CallHierarchyDirection) async throws -> [SymbolInfo] {
+        logger.debug("Call hierarchy (\(direction)) at \(position) in \(filePath)")
+        return try await withInitialized {
+            let items = try await sourceKitLSPClient.callHierarchy(
+                fileURL: resolveFileURL(filePath),
+                position: makeLSPPosition(position),
+                incoming: direction == .incoming
+            )
+            return items.map(makeSymbolInfo)
+        }
+    }
+
+    public func typeHierarchy(at position: Position, in filePath: String, direction: TypeHierarchyDirection) async throws -> [SymbolInfo] {
+        logger.debug("Type hierarchy (\(direction)) at \(position) in \(filePath)")
+        return try await withInitialized {
+            let items = try await sourceKitLSPClient.typeHierarchy(
+                fileURL: resolveFileURL(filePath),
+                position: makeLSPPosition(position),
+                supertypes: direction == .supertypes
+            )
+            return items.map(makeSymbolInfo)
+        }
+    }
+
     public func shutdown() async {
         logger.info("🛑 Swift Language Server shutdown")
         await sourceKitLSPClient.shutdown()
@@ -216,6 +260,100 @@ public final class SwiftLanguageServer {
         )
     }
 
+    private func makeSymbolInfo(_ item: LSPHierarchyItem) -> SymbolInfo {
+        SymbolInfo(
+            name: item.name,
+            kind: symbolKindName(item.kind),
+            location: Location(
+                uri: item.uri,
+                line: item.selectionRange.start.line,
+                character: item.selectionRange.start.character
+            ),
+            containerName: nil,
+            detail: item.detail
+        )
+    }
+
+    /// Apply a rename WorkspaceEdit to disk and report the files touched.
+    private func applyRename(_ changes: [String: [LSPTextEdit]]) throws -> [RenameEdit] {
+        // SourceKit-LSP can return the same file under aliased URIs (e.g.
+        // /tmp vs /private/tmp on macOS). Collapse to the canonical path and
+        // dedupe identical edits so each file is rewritten exactly once.
+        var editsByPath: [String: [LSPTextEdit]] = [:]
+
+        for (uri, edits) in changes {
+            guard let url = URL(string: uri), url.isFileURL else { continue }
+
+            let path = url.resolvingSymlinksInPath().standardizedFileURL.path
+            editsByPath[path, default: []].append(contentsOf: edits)
+        }
+
+        var results: [RenameEdit] = []
+
+        for (path, edits) in editsByPath {
+            let uniqueEdits = dedupeTextEdits(edits)
+            let url = URL(fileURLWithPath: path)
+            let original = try String(contentsOf: url, encoding: .utf8)
+            let updated = applyTextEdits(uniqueEdits, to: original)
+
+            if updated != original {
+                try updated.write(to: url, atomically: true, encoding: .utf8)
+            }
+
+            results.append(RenameEdit(path: path, editCount: uniqueEdits.count))
+        }
+
+        return results.sorted { $0.path < $1.path }
+    }
+
+    private func dedupeTextEdits(_ edits: [LSPTextEdit]) -> [LSPTextEdit] {
+        var seen = Set<String>()
+
+        return edits.filter { edit in
+            let key = "\(edit.range.start.line):\(edit.range.start.character)-\(edit.range.end.line):\(edit.range.end.character)=\(edit.newText)"
+            return seen.insert(key).inserted
+        }
+    }
+
+    /// Apply LSP text edits to a string. Character offsets are UTF-16 code
+    /// units per the LSP spec; edits are applied from the end backwards so
+    /// earlier offsets stay valid.
+    private func applyTextEdits(_ edits: [LSPTextEdit], to content: String) -> String {
+        let units = Array(content.utf16)
+
+        func offset(line: Int, character: Int) -> Int {
+            var index = 0
+            var currentLine = 0
+
+            while index < units.count && currentLine < line {
+                if units[index] == 10 {
+                    currentLine += 1
+                }
+                index += 1
+            }
+
+            return min(index + character, units.count)
+        }
+
+        let ordered = edits.sorted { lhs, rhs in
+            offset(line: lhs.range.start.line, character: lhs.range.start.character) >
+                offset(line: rhs.range.start.line, character: rhs.range.start.character)
+        }
+
+        var result = units
+
+        for edit in ordered {
+            let start = offset(line: edit.range.start.line, character: edit.range.start.character)
+            let end = offset(line: edit.range.end.line, character: edit.range.end.character)
+
+            guard start <= end, end <= result.count else { continue }
+
+            result.replaceSubrange(start..<end, with: Array(edit.newText.utf16))
+        }
+
+        return String(decoding: result, as: UTF16.self)
+    }
+
     private func makeLocationLink(_ link: LSPLocationLink) -> LocationLink {
         LocationLink(
             originSelectionRange: link.originSelectionRange.map(makeRange),
@@ -260,6 +398,26 @@ public final class SwiftLanguageServer {
 }
 
 // MARK: - Supporting Types
+
+public enum CallHierarchyDirection: String {
+    case incoming
+    case outgoing
+}
+
+public enum TypeHierarchyDirection: String {
+    case supertypes
+    case subtypes
+}
+
+public struct RenameEdit {
+    public let path: String
+    public let editCount: Int
+
+    public init(path: String, editCount: Int) {
+        self.path = path
+        self.editCount = editCount
+    }
+}
 
 public struct SymbolInfo {
     public let name: String
