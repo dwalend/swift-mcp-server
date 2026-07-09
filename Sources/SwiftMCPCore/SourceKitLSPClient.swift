@@ -24,6 +24,9 @@ actor SourceKitLSPClient {
     private var standardOutput: FileHandle?
     private var standardError: FileHandle?
     private var stdoutBuffer = Data()
+    private var stdoutContinuation: AsyncStream<Data>.Continuation?
+    private var stdoutTask: Task<Void, Never>?
+    private var startTask: Task<Void, Error>?
     private var nextRequestID = 1
     private var isStarted = false
     private var isShuttingDown = false
@@ -42,7 +45,36 @@ actor SourceKitLSPClient {
         self.logger = logger
     }
 
+    /// Start the session, coalescing concurrent callers onto a single start
+    /// operation. `performStart` suspends on the initialize round-trip, so
+    /// without this guard two callers (e.g. background warm-up and the first
+    /// tool call) could both pass an `isStarted` check and spawn two processes.
     func start() async throws {
+        if isStarted {
+            return
+        }
+
+        if let startTask {
+            return try await startTask.value
+        }
+
+        let task = Task<Void, Error> { [weak self] in
+            guard let self else { return }
+            try await self.performStart()
+        }
+        startTask = task
+
+        do {
+            try await task.value
+        } catch {
+            startTask = nil
+            throw error
+        }
+
+        startTask = nil
+    }
+
+    private func performStart() async throws {
         guard !isStarted else { return }
 
         guard FileManager.default.fileExists(atPath: executablePath) else {
@@ -59,11 +91,22 @@ actor SourceKitLSPClient {
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
+        // Feed stdout through a single ordered stream so byte chunks are
+        // appended in the exact order they were read. Spawning an independent
+        // Task per readability callback would let the actor run them out of
+        // order and corrupt LSP message framing.
+        let (stdoutStream, continuation) = AsyncStream<Data>.makeStream()
+        self.stdoutContinuation = continuation
+        self.stdoutTask = Task { [weak self] in
+            for await data in stdoutStream {
+                await self?.handleStandardOutput(data)
+            }
+        }
+
         outputPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            Task {
-                await self.handleStandardOutput(data)
-            }
+            guard !data.isEmpty else { return }
+            continuation.yield(data)
         }
 
         errorPipe.fileHandleForReading.readabilityHandler = { handle in
@@ -410,6 +453,13 @@ actor SourceKitLSPClient {
         standardError?.readabilityHandler = nil
         standardError?.closeFile()
         standardOutput?.closeFile()
+
+        stdoutContinuation?.finish()
+        stdoutContinuation = nil
+        stdoutTask?.cancel()
+        stdoutTask = nil
+        startTask?.cancel()
+        startTask = nil
 
         if let process, process.isRunning {
             process.terminate()
@@ -807,6 +857,11 @@ actor SourceKitLSPClient {
         }
         failAllPendingRequests(with: SwiftMCPError.communicationError("SourceKit-LSP exited unexpectedly"))
         failAllDiagnosticWaiters(with: SwiftMCPError.communicationError("SourceKit-LSP exited unexpectedly"))
+        stdoutContinuation?.finish()
+        stdoutContinuation = nil
+        stdoutTask?.cancel()
+        stdoutTask = nil
+        startTask = nil
         process = nil
         standardInput = nil
         standardOutput = nil

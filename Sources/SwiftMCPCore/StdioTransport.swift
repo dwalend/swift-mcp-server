@@ -32,6 +32,12 @@ public final class StdioTransport: @unchecked Sendable {
         let resourceUsage = await modernConcurrency.getResourceUsage()
         logger.info("💾 Initial resource usage - Memory: \(resourceUsage.memoryMB)MB, CPU: \(resourceUsage.cpuPercentage)%, Network: \(resourceUsage.networkOperations)")
 
+        // Warm up SourceKit-LSP in the background so the first tool call does
+        // not pay the full startup and index-warmup latency.
+        Task { [weak self] in
+            try? await self?.swiftLanguageServer.initialize()
+        }
+
         while true {
             guard let line = readLine() else {
                 logger.debug("STDIO input closed, shutting down")

@@ -5,6 +5,16 @@ All notable changes to the Swift MCP Server project will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-07-09
+
+### Fixed
+- **stdout ordering race:** SourceKit-LSP output was ingested via one detached `Task` per read callback, which the actor could run out of order and corrupt LSP message framing (surfacing as spurious internal errors that failed all in-flight requests). Output now flows through a single ordered `AsyncStream` consumer.
+- **Double-start race:** `start()` suspended on the initialize round-trip before marking the session started, so two concurrent callers could spawn two SourceKit-LSP processes. Concurrent callers now coalesce onto a single start task.
+
+### Performance
+- SourceKit-LSP is warmed up in the background when a transport starts, so the first tool call no longer pays the full startup and index-warmup latency.
+- Applying rename/code-action edits precomputes line offsets once instead of rescanning the file per edit (was O(n²) in file size).
+
 ## [2.2.0] - 2026-07-09
 
 ### Added

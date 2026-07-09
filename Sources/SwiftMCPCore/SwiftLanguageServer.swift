@@ -348,18 +348,18 @@ public final class SwiftLanguageServer {
     private func applyTextEdits(_ edits: [LSPTextEdit], to content: String) -> String {
         let units = Array(content.utf16)
 
+        // Precompute the UTF-16 offset where each line begins so position
+        // lookups are O(1) instead of rescanning the whole file per edit.
+        var lineStarts = [0]
+        for index in units.indices where units[index] == 10 {
+            lineStarts.append(index + 1)
+        }
+
         func offset(line: Int, character: Int) -> Int {
-            var index = 0
-            var currentLine = 0
-
-            while index < units.count && currentLine < line {
-                if units[index] == 10 {
-                    currentLine += 1
-                }
-                index += 1
+            guard line >= 0, line < lineStarts.count else {
+                return units.count
             }
-
-            return min(index + character, units.count)
+            return min(lineStarts[line] + character, units.count)
         }
 
         let ordered = edits.sorted { lhs, rhs in

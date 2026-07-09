@@ -70,7 +70,13 @@ public final class MCPServer: @unchecked Sendable {
         // Log resource usage
         let resourceUsage = await modernConcurrency.getResourceUsage()
         logger.info("💾 Initial resource usage - Memory: \(resourceUsage.memoryMB)MB, CPU: \(resourceUsage.cpuPercentage)%, Network: \(resourceUsage.networkOperations)")
-        
+
+        // Warm up SourceKit-LSP in the background so the first tool call does
+        // not pay the full startup and index-warmup latency.
+        Task { [weak self] in
+            try? await self?.swiftLanguageServer.initialize()
+        }
+
         // Wait until the server is closed
         try await channel.closeFuture.get()
     }
