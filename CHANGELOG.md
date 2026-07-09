@@ -5,165 +5,40 @@ All notable changes to the Swift MCP Server project will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.6.0] - 2026-07-09
+## [Unreleased]
 
-### Removed
-- The `ModernConcurrency` module and library product (~2k lines). Its task manager, thread-safe collections, and continuation helpers were dead weight — carried over from another project and unused by the MCP request path, which relies on Swift actors, structured concurrency, and SwiftNIO. The only observable use was a startup resource-usage log, now dropped. No behavior change; all tools and tests are unaffected.
-
-## [2.5.0] - 2026-07-09
+A ground-up overhaul that refocuses the server on SourceKit-LSP. This is a
+breaking change from 1.x; tag it as `v2.0.0` when released.
 
 ### Added
-- Objective-C / C / C++ support: the LSP `languageId` is now chosen from the file extension (`.m`, `.mm`, `.h`, `.c`, `.cpp`, …) instead of always being `swift`, so SourceKit-LSP routes C-family files to `clangd`. Verified end-to-end (`find_symbols` on an Objective-C `.m` with a `compile_commands.json`). SwiftUI already worked, being ordinary Swift.
-
-## [2.4.0] - 2026-07-09
+- Index-backed navigation tools: `search_workspace_symbols`, `get_implementations`, `call_hierarchy`, and `type_hierarchy`. They wait a bounded amount of time for SourceKit-LSP's global index to warm up before returning.
+- Refactoring tools that write to disk: `rename_symbol` (workspace-wide) and `code_actions` (list compiler fix-its / refactorings on a line, or apply one by title). `code_actions` declares `codeActionLiteralSupport` and replays the original diagnostics so fix-its resolve.
+- Objective-C / C / C++ support: the LSP `languageId` is chosen from the file extension (`.m`, `.mm`, `.h`, `.c`, `.cpp`, …) so SourceKit-LSP routes C-family files to `clangd`. (SwiftUI already worked, being ordinary Swift.)
+- Background SourceKit-LSP warm-up when a transport starts, so the first tool call does not pay the full startup and index latency.
 
 ### Changed
-- Extracted the SourceKit-LSP client into a standalone `SourceKitLSP` library target (and product): `SwiftLanguageServer`, the LSP value types, and `JSONValue` now live there, depending only on Foundation and swift-log. `SwiftMCPCore` depends on it and layers the MCP protocol on top. The dependency is one-directional — `SourceKitLSP` has no knowledge of MCP — so it can be reused on its own.
+- **Focused the tool surface on SourceKit-LSP.** The core set is `find_symbols`, `find_references`, `get_definition`, `get_hover_info`, `format_document`, and `get_diagnostics`, alongside the tools listed above — every tool is grounded in real compiler semantics.
+- Extracted the SourceKit-LSP client into a standalone `SourceKitLSP` library target and product (`SwiftLanguageServer`, the LSP value types, and `JSONValue`), depending only on Foundation and swift-log. `SwiftMCPCore` layers the MCP protocol on top; the dependency is one-directional, so the client is reusable on its own.
+- `SwiftLanguageServer` dropped its mutable `isInitialized` flag; startup is delegated to the SourceKit-LSP actor's idempotent guard, making the type safe to share across concurrent requests.
 
-## [2.3.0] - 2026-07-09
+### Removed
+- Heuristic project/architecture analysis, documentation and template generation, project-memory, iOS framework analysis, and the Apple SDK catalog — along with the `analyze_project`, `detect_architecture`, `analyze_symbol_usage`, `analyze_pop_usage`, `create_project_memory`, `generate_migration_plan`, `intelligent_project_memory`, `generate_documentation`, `analyze_ios_frameworks`, and `generate_template` tools. Their output was either trivially derivable by an LLM client or low-confidence heuristics.
+- The `ModernConcurrency` module and library product (~2k lines): a task manager, thread-safe collections, and continuation helpers carried over from another project and unused by the MCP request path, which relies on Swift actors, structured concurrency, and SwiftNIO.
+- The `swift-syntax` dependency and the `analysis` configuration block.
 
 ### Fixed
-- **stdout ordering race:** SourceKit-LSP output was ingested via one detached `Task` per read callback, which the actor could run out of order and corrupt LSP message framing (surfacing as spurious internal errors that failed all in-flight requests). Output now flows through a single ordered `AsyncStream` consumer.
-- **Double-start race:** `start()` suspended on the initialize round-trip before marking the session started, so two concurrent callers could spawn two SourceKit-LSP processes. Concurrent callers now coalesce onto a single start task.
+- **stdout ordering race:** SourceKit-LSP output was ingested via one detached `Task` per read callback, which the actor could run out of order and corrupt LSP message framing. Output now flows through a single ordered `AsyncStream` consumer.
+- **Double-start race:** `start()` suspended on the initialize round-trip before marking the session started, so concurrent callers could spawn two SourceKit-LSP processes. Callers now coalesce onto a single start task.
+- `rename_symbol` collapses aliased file URIs (e.g. `/tmp` vs `/private/tmp`) to a canonical path and dedupes edits, so a file is never rewritten twice.
+- Honor `SOURCEKIT_LSP_PATH` to select a specific `sourcekit-lsp` binary (falling back to the common locations).
 
 ### Performance
-- SourceKit-LSP is warmed up in the background when a transport starts, so the first tool call no longer pays the full startup and index-warmup latency.
 - Applying rename/code-action edits precomputes line offsets once instead of rescanning the file per edit (was O(n²) in file size).
 
-## [2.2.0] - 2026-07-09
+## [1.0.0]
 
-### Added
-- `get_implementations` — find concrete implementations of a protocol requirement or method (`textDocument/implementation`).
-- `code_actions` — list compiler fix-its and refactorings available on a line, or apply one by title (writing its edits to disk). Declares `codeActionLiteralSupport` so SourceKit-LSP returns quickfix actions, and replays the original diagnostics into the request context so fix-its resolve.
-
-### Changed
-- `SwiftLanguageServer` no longer keeps a mutable `isInitialized` flag; startup is delegated to the SourceKit-LSP actor's idempotent guard, so the type is safe to share across concurrent requests.
-
-## [2.1.0] - 2026-07-09
-
-### Added
-- Four index-backed SourceKit-LSP tools:
-  - `search_workspace_symbols` — find symbols by name across the whole workspace (`workspace/symbol`).
-  - `rename_symbol` — rename a symbol across the workspace and write the edits to disk (`textDocument/rename`).
-  - `call_hierarchy` — find callers (incoming) or callees (outgoing) of a function.
-  - `type_hierarchy` — find supertypes or subtypes/conformers of a type.
-- These wait a bounded amount of time for SourceKit-LSP's global index to become ready before returning, since it may still be building right after startup.
-
-### Fixed
-- `rename_symbol` collapses aliased file URIs (e.g. `/tmp` vs `/private/tmp`) to a canonical path and dedupes edits, so a file is never rewritten twice.
-
-## [2.0.0] - 2026-07-09
-
-### Changed
-- **Focused the tool surface on SourceKit-LSP.** The server now exposes exactly the operations that require a real language server: `find_symbols`, `find_references`, `get_definition`, `get_hover_info`, `format_document`, and `get_diagnostics`.
-
-### Removed
-- Heuristic project/architecture analysis, documentation and template generation, project-memory, iOS framework analysis, and the Apple SDK catalog, along with the `analyze_project`, `detect_architecture`, `analyze_symbol_usage`, `analyze_pop_usage`, `create_project_memory`, `generate_migration_plan`, `intelligent_project_memory`, `generate_documentation`, `analyze_ios_frameworks`, and `generate_template` tools. These either duplicated what an LLM client already does well or produced low-confidence heuristic output.
-- The `swift-syntax` dependency and the `analysis` configuration block, which are no longer needed.
-
-### Rationale
-The removed tools carried significant maintenance surface for little value: their output was either trivially derivable by the client or heuristic and unreliable. Concentrating on SourceKit-LSP keeps every remaining tool grounded in real compiler semantics.
-
-## [1.0.0] - Latest Release
-
-### Added
-- **Initial Release**: Professional Swift MCP Server with comprehensive static analysis
-- **15 Specialized Tools**: Complete Swift project analysis suite
-  - `analyze_project` - Comprehensive project analysis
-  - `detect_architecture` - Architectural pattern recognition  
-  - `find_symbols` - Advanced symbol search
-  - `get_symbol_info` - Detailed symbol information
-  - `generate_documentation` - Auto-generate Swift documentation
-  - `analyze_dependencies` - Framework and package analysis
-  - `detect_patterns` - Design pattern recognition
-  - `suggest_refactoring` - Code improvement suggestions
-  - `analyze_performance` - Performance bottleneck detection
-  - `check_best_practices` - Swift coding standards validation
-  - `generate_tests` - Unit test generation
-  - `analyze_memory` - Memory management analysis
-  - `find_unused_code` - Dead code detection
-  - `generate_mocks` - Test mock generation
-  - `create_templates` - Code template generation
-
-### Core Features
-- **SourceKit-LSP Integration**: Leverages Apple's official language server
-- **Architecture Analysis**: Automated detection of MVC, MVVM, VIPER patterns
-- **Protocol-Oriented Programming Assessment**: Quantitative 0-100 scoring system
-- **Swift Symbol Intelligence**: Enhanced search and categorization
-- **Project Health Metrics**: Comprehensive codebase quality assessment
-- **Real-time Diagnostics**: Live compilation feedback and error reporting
-
-### Technical Implementation
-- **Modern Swift Concurrency**: Built with async/await for optimal performance
-- **HTTP API**: RESTful interface following MCP specification
-- **Swift Package Manager**: Native SPM compatibility and workspace analysis
-- **Modular Architecture**: Scalable design supporting large codebases
-- **Comprehensive Testing**: Full test suite with 80%+ coverage
-
-### Serena MCP Integration
-- **Seamless Integration**: Direct compatibility with Serena coding agents
-- **Complete Documentation**: Detailed integration guide (SERENA_INTEGRATION.md)
-- **Configuration Examples**: Ready-to-use Claude Desktop configurations
-- **Interactive Workflows**: Support for conversational code analysis
-- **Project Memory**: Persistent learning about Swift project patterns
-
-### Documentation & Tooling
-- **Comprehensive README**: Complete setup and usage instructions
-- **Quick Start Script**: Automated installation and configuration (`quick-start.sh`)
-- **Configuration Examples**: Pre-built configs for popular MCP clients
-- **Best Practices Guide**: Recommendations for optimal usage
-- **API Examples**: Real-world usage examples and templates
-- **Initial Release** - Professional Swift MCP Server implementation
-- **Protocol-Oriented Programming Analysis** - Quantitative 0-100 scoring system for POP adoption assessment
-- **Architecture Pattern Detection** - Automated recognition of MVC, MVVM, VIPER, Clean Architecture, and Modular patterns
-- **Enhanced Symbol Search** - Advanced SourceKit-LSP integration with intelligent filtering and categorization
-- **Project Intelligence Engine** - Comprehensive codebase analysis with memory and migration planning
-- **Real-time Diagnostics** - Live compilation feedback and health metrics
-- **Six Specialized MCP Tools**:
-  - `analyze_pop_usage` - Protocol-Oriented Programming evaluation
-  - `detect_architecture` - Architectural pattern identification  
-  - `search_symbols` - Advanced symbol search with filtering
-  - `get_symbol_info` - Detailed symbol analysis and relationships
-  - `analyze_project` - Holistic project assessment
-  - `get_diagnostics` - Real-time compilation diagnostics
-
-### Technical Features
-- **Swift 5.9+ Compatibility** - Modern concurrency with async/await support
-- **SourceKit-LSP Integration** - Official Apple language server protocol
-- **MCP 2.0 Compliance** - Full Model Context Protocol implementation
-- **HTTP/JSON-RPC API** - RESTful interface following industry standards
-- **Modular Architecture** - Extensible plugin-based design for scalability
-- **Comprehensive Testing** - Complete test suite with 100% success rate
-- **Cross-platform Support** - macOS and Linux compatibility
-
-### Documentation
-- **Professional README** - Complete API documentation with examples
-- **Installation Guide** - Production and development setup instructions
-- **Integration Examples** - MCP client configuration and usage patterns
-- **Testing Framework** - Automated and manual validation procedures
-- **Architecture Documentation** - System design and implementation details
-
-### Build & Deployment
-- **Swift Package Manager** - Native SPM support with dependency management
-- **Release Configuration** - Optimized builds for production deployment
-- **GitHub Integration** - Complete CI/CD setup and repository management
-- **Professional Licensing** - MIT license for open source distribution
-
-### Performance & Quality
-- **Efficient Analysis** - Optimized algorithms for large codebase processing
-- **Memory Management** - Smart caching and incremental analysis capabilities  
-- **Error Handling** - Comprehensive error management with graceful degradation
-- **Code Standards** - Following Swift API Design Guidelines and best practices
-
-## Project Metrics
-
-- **Lines of Code**: 4,900+
-- **Source Files**: 21
-- **Test Coverage**: 100% (4/4 tests passing)
-- **Build Status**: Success
-- **Documentation**: Complete with examples
-- **Platform Support**: macOS 13.0+, Linux Ubuntu 18.04+
-
----
-
-**Note**: This is the initial release establishing the foundation for professional Swift project analysis through the Model Context Protocol.
+Initial release: a Swift MCP server built on SourceKit-LSP, bundled with a
+suite of heuristic project-analysis tools (architecture detection,
+protocol-oriented-programming scoring, documentation/template generation,
+project memory). Those analysis tools were removed in the overhaul above in
+favor of a focused, compiler-backed tool set.

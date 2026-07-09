@@ -196,7 +196,7 @@ public struct ServerConfiguration: Codable {
     }
     
     public init(name: String = "swift-mcp-server",
-               version: String = "1.0.0",
+               version: String = "2.0.0",
                description: String = "A Model Context Protocol server exposing SourceKit-LSP for semantic Swift tooling",
                mcpServer: MCPServerConfig = MCPServerConfig(),
                serenaIntegration: SerenaIntegration = SerenaIntegration(),

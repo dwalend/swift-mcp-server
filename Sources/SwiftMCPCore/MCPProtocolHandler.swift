@@ -46,7 +46,7 @@ public final class MCPProtocolHandler {
             capabilities: capabilities,
             serverInfo: ServerInfo(
                 name: "swift-mcp-server",
-                version: "1.0.0"
+                version: "2.0.0"
             )
         )
 

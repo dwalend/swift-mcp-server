@@ -133,7 +133,7 @@ actor SourceKitLSPClient {
             "processId": .integer(Int(ProcessInfo.processInfo.processIdentifier)),
             "clientInfo": [
                 "name": "swift-mcp-server",
-                "version": "1.0.0"
+                "version": "2.0.0"
             ],
             "rootUri": .string(workspaceRoot.absoluteString),
             "capabilities": [

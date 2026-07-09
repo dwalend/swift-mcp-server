@@ -41,7 +41,7 @@ struct SwiftMCPServer: AsyncParsableCommand {
         • swift-mcp-server --transport stdio --workspace /path/to/project
         • swift-mcp-server --transport http --workspace /path/to/project --port 8080
         """,
-        version: "1.0.0"
+        version: "2.0.0"
     )
     
     // MARK: - Transport Configuration

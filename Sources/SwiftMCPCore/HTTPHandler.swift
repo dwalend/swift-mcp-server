@@ -182,7 +182,7 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
             result: .object([
                 "status": "healthy",
                 "server": "Swift MCP Server",
-                "version": "1.0.0",
+                "version": "2.0.0",
                 "timestamp": .string(ISO8601DateFormatter().string(from: Date()))
             ])
         )
@@ -195,7 +195,7 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
             id: nil,
             result: .object([
                 "name": "Swift MCP Server",
-                "version": "1.0.0",
+                "version": "2.0.0",
                 "description": "A Model Context Protocol server exposing SourceKit-LSP for semantic Swift tooling",
                 "capabilities": [
                     "roots": ["listChanged": true],
@@ -203,7 +203,7 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                 ],
                 "serverInfo": [
                     "name": "swift-mcp-server",
-                    "version": "1.0.0"
+                    "version": "2.0.0"
                 ]
             ])
         )
