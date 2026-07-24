@@ -210,6 +210,7 @@ actor SourceKitLSPClient {
         let document = try await prepareDocument(fileURL)
 
         return try await poll(
+            timeout: indexReadinessTimeout,
             operation: {
                 try await self.requestDecodedArray(
                     method: "textDocument/references",
@@ -233,6 +234,7 @@ actor SourceKitLSPClient {
         let document = try await prepareDocument(fileURL)
 
         return try await poll(
+            timeout: indexReadinessTimeout,
             operation: {
                 let targets: [LSPDefinitionTarget] = try await self.requestDecodedOneOrMany(
                     method: "textDocument/definition",
